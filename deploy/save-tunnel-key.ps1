@@ -7,7 +7,7 @@ if ($SelfTest -and [IO.Path]::GetFileName($CredentialPath) -ne 'dpapi-self-test.
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Gumacu - Secure tunnel key (fixed)'
+$form.Text = 'Gumacu - Secure tunnel key (diagnostic)'
 $form.Size = New-Object Drawing.Size(560,210)
 $form.StartPosition = 'CenterScreen'
 $form.TopMost = $true
@@ -30,10 +30,14 @@ $saveHandler = {
         return
     }
     try {
+        $stage = 'directory'
         $parent = Split-Path -Parent $CredentialPath
         [IO.Directory]::CreateDirectory($parent) | Out-Null
+        $stage = 'encrypt'
         $encrypted = ConvertTo-SecureString $inputBox.Text -AsPlainText -Force | ConvertFrom-SecureString
+        $stage = 'write'
         [IO.File]::WriteAllText($CredentialPath, $encrypted)
+        $stage = 'permissions'
         $acl = New-Object Security.AccessControl.FileSecurity
         $acl.SetAccessRuleProtection($true,$false)
         $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -43,8 +47,10 @@ $saveHandler = {
         $inputBox.Clear()
         $form.Close()
     } catch {
-        if ($SelfTest) { throw }
-        [Windows.Forms.MessageBox]::Show('Could not save the key securely. No key was logged.') | Out-Null
+        $diagnostic = @{stage=$stage; error_type=$_.Exception.GetType().FullName}
+        [IO.File]::WriteAllText($CredentialPath + '.diagnostic.json', ($diagnostic | ConvertTo-Json))
+        if ($SelfTest) { $form.Close(); return }
+        [Windows.Forms.MessageBox]::Show('Secure save failed at: ' + $stage + '. No key was logged.') | Out-Null
     }
 }.GetNewClosure()
 $save.Add_Click($saveHandler)
@@ -53,7 +59,12 @@ $form.AcceptButton = $save
 $form.Add_Shown({$inputBox.Focus()})
 if ($SelfTest) {
     $inputBox.Text = 'sk-dummy-gumacu-self-test-not-a-real-key'
-    & $saveHandler
+    $testTimer = New-Object Windows.Forms.Timer
+    $testTimer.Interval = 100
+    $testTimer.Add_Tick({$testTimer.Stop(); $save.PerformClick()}.GetNewClosure())
+    $testTimer.Start()
+    [void]$form.ShowDialog()
+    $testTimer.Dispose()
     if (-not (Test-Path -LiteralPath $CredentialPath)) { throw 'Self-test did not save' }
     $restored = Get-Content -LiteralPath $CredentialPath -Raw | ConvertTo-SecureString
     $restored.Dispose()
