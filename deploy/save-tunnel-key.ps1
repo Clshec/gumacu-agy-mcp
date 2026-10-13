@@ -1,11 +1,17 @@
-param([Parameter(Mandatory=$true)][string]$CredentialPath)
+param([Parameter(Mandatory=$true)][string]$CredentialPath, [switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
+$CredentialPath = [IO.Path]::GetFullPath($CredentialPath)
+if ($SelfTest -and [IO.Path]::GetFileName($CredentialPath) -ne 'dpapi-self-test.tmp') {
+    throw 'Self-test may only write dpapi-self-test.tmp'
+}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Gumacu - Secure tunnel key'
+$form.Text = 'Gumacu - Secure tunnel key (fixed)'
 $form.Size = New-Object Drawing.Size(560,210)
 $form.StartPosition = 'CenterScreen'
+$form.TopMost = $true
+$form.ShowInTaskbar = $true
 $label = New-Object Windows.Forms.Label
 $label.Text = 'Paste the dedicated Tunnels Read + Use key. It stays encrypted on this PC.'
 $label.Location = New-Object Drawing.Point(15,15)
@@ -18,7 +24,7 @@ $save = New-Object Windows.Forms.Button
 $save.Text = 'Save securely'
 $save.Location = New-Object Drawing.Point(370,110)
 $save.Size = New-Object Drawing.Size(150,30)
-$save.Add_Click({
+$saveHandler = {
     if (-not $inputBox.Text.StartsWith('sk-') -or $inputBox.Text.Length -lt 25) {
         [Windows.Forms.MessageBox]::Show('Enter a valid dedicated API key.') | Out-Null
         return
@@ -37,12 +43,24 @@ $save.Add_Click({
         $inputBox.Clear()
         $form.Close()
     } catch {
+        if ($SelfTest) { throw }
         [Windows.Forms.MessageBox]::Show('Could not save the key securely. No key was logged.') | Out-Null
     }
-})
+}.GetNewClosure()
+$save.Add_Click($saveHandler)
 $form.Controls.AddRange(@($label,$inputBox,$save))
 $form.AcceptButton = $save
 $form.Add_Shown({$inputBox.Focus()})
-[void]$form.ShowDialog()
+if ($SelfTest) {
+    $inputBox.Text = 'sk-dummy-gumacu-self-test-not-a-real-key'
+    & $saveHandler
+    if (-not (Test-Path -LiteralPath $CredentialPath)) { throw 'Self-test did not save' }
+    $restored = Get-Content -LiteralPath $CredentialPath -Raw | ConvertTo-SecureString
+    $restored.Dispose()
+    Remove-Item -LiteralPath $CredentialPath
+    Write-Output 'capture_self_test=passed'
+} else {
+    [void]$form.ShowDialog()
+}
 $inputBox.Dispose()
 $form.Dispose()
