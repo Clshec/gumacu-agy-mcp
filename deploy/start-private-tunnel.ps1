@@ -20,7 +20,7 @@ try {
     $info.EnvironmentVariables['XDG_CONFIG_HOME'] = Join-Path $runtime 'config'
     $profiles = Join-Path $runtime 'profiles'
     $profileText = Get-Content -LiteralPath (Join-Path $profiles 'gumacu-netcup.yaml') -Raw
-    $match = [regex]::Match($profileText, '(?m)^\s+command:\s+(".*")\s*$')
+    $match = [regex]::Match($profileText, '(?m)^\s+"?command"?:\s+(".*")\s*$')
     if (-not $match.Success) { throw 'Reviewed stdio command is missing.' }
     $command = $match.Groups[1].Value | ConvertFrom-Json
     # The generated command uses forward slash paths; quote it as one Windows argument.

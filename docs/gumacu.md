@@ -137,3 +137,21 @@ No startup task or permanent server service has been installed. The remote /tmp
 runtime must be replaced by a reviewed durable installation before relying on reboot
 persistence. deploy/codex-netcup-testing.toml is a tested example, not an installed
 global Codex configuration. Ordinary ChatGPT frontend tests are still pending.
+
+## Controlled profile activation and live diagnostics
+
+User authorized activation of `GUMACU_REMOTE_PROFILE=controlled` with workspace
+restricted to `/tmp/gumacu-agy-review.WyP04n3d/workspace`.
+
+All 6 controlled tools are exposed and verified via SSH probe:
+`agy_start`, `agy_status`, `agy_read`, `agy_result_page`, `agy_sessions`, `agy_cancel`.
+Write and execute modes remain blocked (`allow_write=False`, `worktree=False`, `sandbox=True`).
+
+Verification:
+- Two-turn live agy session completed successfully (`GUMACU_SMOKE_OK` -> `ORCHID`).
+- Read-only diagnostics collector deployed at `workspace/diagnostics/collect.sh`.
+- Live diagnostic task executed: agy analyzed `SYSTEM_SNAPSHOT.md` and returned a 3-point
+  analysis of CPU, memory (93% utilization), Rook-Ceph, Rancher, and Kubernetes workloads.
+- Windows tunnel runner updated with clean unquoted arguments, preventing flag collision (`-m`).
+- Active tunnel daemon polling OpenAI control plane continuously (`readiness=1`, status 204).
+

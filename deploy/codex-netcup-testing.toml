@@ -6,7 +6,7 @@ command = 'C:\Windows\System32\OpenSSH\ssh.exe'
 args = [
   "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
   "نيت كيب سيرفر",
-  "env GUMACU_REMOTE_PROFILE=read-only AGY_MCP_SESSION_ROOT=/tmp/gumacu-agy-review.WyP04n3d/live-sessions /tmp/gumacu-agy-review.WyP04n3d/venv/bin/python -m agy_mcp.cli",
+  "env GUMACU_REMOTE_PROFILE=controlled GUMACU_ALLOWED_WORKSPACE=/tmp/gumacu-agy-review.WyP04n3d/workspace AGY_MCP_SESSION_ROOT=/tmp/gumacu-agy-review.WyP04n3d/live-sessions /tmp/gumacu-agy-review.WyP04n3d/venv/bin/python -m agy_mcp.cli",
 ]
 startup_timeout_sec = 30
 tool_timeout_sec = 180

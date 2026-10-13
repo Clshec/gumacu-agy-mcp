@@ -23,6 +23,10 @@ async def probe(config: Path, job_id: str) -> None:
                 blocked = await client.call_tool("agy_start", {"PROMPT": "must not run"})
                 if not blocked.isError:
                     raise RuntimeError("read-only endpoint unexpectedly accepted agy_start")
+            elif len(tools.tools) == 6:
+                tool_names = {t.name for t in tools.tools}
+                if "agy_start" not in tool_names or "agy_cancel" not in tool_names:
+                    raise RuntimeError("controlled endpoint missing agy_start or agy_cancel")
             result = (await client.call_tool("agy_result_page", {
                 "job_id": job_id, "offset": 0, "limit": 16000,
             })).structuredContent
