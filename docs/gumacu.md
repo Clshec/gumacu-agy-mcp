@@ -81,3 +81,25 @@ Final targeted server/utils/page suite: 185 passed / 7 failed / 13 skipped; thos
 seven failures are also in the upstream baseline. Full Windows suite is not a clean
 Linux verification: upstream uses POSIX shell fixtures and privileged symlink creation.
 Linux CI or an isolated Linux runner is required before production readiness.
+
+## Authorized live test update
+
+The user reported special authorization for agy wrapping and explicitly selected
+the existing Netcup agy identities. This is user-reported authorization, not an
+independent Google verification, and does not change the general FAQ restrictions.
+No Google credential files were copied, edited or switched.
+Code/dependencies were staged in a root-private temporary directory, without OS
+package installation, systemd changes or a persistent listener.
+Linux full suite: **778 passed**, including the real HTTP test.
+Opt-in `scripts/gumacu_live_smoke.py` exercised actual MCP stdio tools:
+`agy_start` -> `agy_status` -> `agy_result_page`, then another `agy_start` with
+the same session ID. First full reply: `GUMACU_SMOKE_OK\n`; second: `ORCHID\n`.
+Both jobs completed and used the same resumable Google conversation ID.
+This establishes bridge-to-CLI continuation, not ordinary ChatGPT UI behavior.
+Manager remained active/healthy at 4.7.1; no agy test process or HTTP listener remained.
+
+ChatGPT integration is pending OpenAI Platform sign-in and tunnel availability.
+Secure MCP Tunnel needs a tunnel ID, runtime credential and correct workspace
+association. Those permissions are separate from Plus subscription access.
+No tunnel ID/key was found in the inspected local configuration locations.
+Use https://platform.openai.com/settings/organization/tunnels after signing in.
