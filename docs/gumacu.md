@@ -103,3 +103,37 @@ Secure MCP Tunnel needs a tunnel ID, runtime credential and correct workspace
 association. Those permissions are separate from Plus subscription access.
 No tunnel ID/key was found in the inspected local configuration locations.
 Use https://platform.openai.com/settings/organization/tunnels after signing in.
+
+## Private connection hardening
+
+The user approved creation and configuration of the private tunnel after reviewing
+root execution risk. The user also created a second tunnel named netcup; its displayed
+organization/workspace scope matches the prepared tunnel. Use the user's netcup tunnel
+for the runtime; leave the other definition inactive until cleanup is authorized.
+No runtime secret or tunnel identifier is stored in this repository.
+
+Initial runtime uses GUMACU_REMOTE_PROFILE=read-only and SSH stdio (no public MCP port).
+Only agy_status, agy_read, agy_result_page and agy_sessions are exposed. An actual
+agy_start call through SSH was rejected; stored text retrieval succeeded.
+GUMACU_REMOTE_PROFILE=controlled additionally allows start/cancel with request-level
+workspace checks, no caller env overrides, only agy backend, no write/execute/worktree
+mode, capped timeout and forced CLI sandbox. These are application guards, not proof
+of operating-system filesystem isolation or prompt-injection immunity.
+Remote source after hardening: full Linux suite **790 passed**. Ruff passed.
+Requests to the tunnel poll endpoint without authorization or with a fake key returned
+HTTP 401. Local doctor output alone does not establish remote authentication.
+
+The Windows tunnel client v0.0.16 was downloaded from openai/tunnel-client and its
+ZIP SHA256 matched the GitHub release digest. Credentials are entered by the user,
+DPAPI-encrypted and file-ACL restricted to that Windows identity. They are passed in
+the child environment, never on command lines. Runtime key scope: Tunnels Read+Use,
+not models/files/admin; test expiry is seven days. Actual key creation/save remains
+pending until the user completes the secure UI flow. Keep all runtime files outside
+the checkout and out of Git. Windows account compromise still defeats this boundary.
+
+This initial transport runs on Windows and uses existing SSH access to Netcup. It
+requires that PC to remain connected; it is not an always-on server deployment.
+No startup task or permanent server service has been installed. The remote /tmp
+runtime must be replaced by a reviewed durable installation before relying on reboot
+persistence. deploy/codex-netcup-testing.toml is a tested example, not an installed
+global Codex configuration. Ordinary ChatGPT frontend tests are still pending.

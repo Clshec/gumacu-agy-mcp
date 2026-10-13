@@ -64,6 +64,7 @@ from agy_mcp.models import (
     SessionsToolResponse,
     StatusToolResponse,
 )
+from agy_mcp.remote_policy import restrict_request, restrict_tools
 from agy_mcp.safety import SafetyPolicy
 from agy_mcp.session_store import SessionStore
 from agy_mcp.supervisor import Supervisor
@@ -250,7 +251,7 @@ def _build_request(payload: dict[str, Any]) -> BridgeRequest:
     catches it and converts to a structured failure envelope.
     """
 
-    return BridgeRequest(**payload)
+    return BridgeRequest(**restrict_request(payload))
 
 
 def _structured_failure(safety: SafetyPolicy, exc: BaseException, *, cwd: str = "") -> BridgeResponse:
@@ -1157,6 +1158,7 @@ def run(transport: str = "stdio", port: int = 8765) -> None:
     # Materialise singletons before stdio takes over so any configuration
     # error surfaces with a stack trace rather than a closed pipe.
     _ensure_state()
+    restrict_tools(mcp)
     if transport not in {"stdio", "streamable-http"}:
         raise ValueError("unsupported transport")
     if not 1 <= port <= 65535:
