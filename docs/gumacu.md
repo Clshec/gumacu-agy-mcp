@@ -73,6 +73,11 @@ authentication/quota validity was not tested. These are consumer-plan labels.
 The two commits reported from the cloud were not recovered locally; this branch
 contains newly reviewed changes and must not claim their test counts.
 Local validation: 71 targeted tests passed; a real HTTP MCP roundtrip and page tests
-passed (8 tests). Lint and wheel/sdist artifact audit passed. Full Windows suite is
-not a clean Linux verification: upstream uses POSIX shell fixtures and privileged
-symlink creation. GitHub's Linux CI is required before production readiness.
+passed (8 tests). Lint and wheel/sdist artifact audit passed. Full Windows comparison:
+upstream 699 passed / 43 failed / 28 skipped; fork snapshot 706 passed / 43 failed /
+28 skipped. Failure node IDs are identical (zero newly failing tests). The HTTP test
+was added afterward and passed separately, including translated event cursors.
+Final targeted server/utils/page suite: 185 passed / 7 failed / 13 skipped; those
+seven failures are also in the upstream baseline. Full Windows suite is not a clean
+Linux verification: upstream uses POSIX shell fixtures and privileged symlink creation.
+Linux CI or an isolated Linux runner is required before production readiness.
