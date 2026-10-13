@@ -67,6 +67,11 @@ async def test_http_roundtrip_full_text_and_cursor(tmp_path):
                     })
                     assert result.structuredContent["next_since"] == 1
                     assert result.structuredContent["has_more"]
+                    translated = await session.call_tool("agy_read", {
+                        "job_id": record.job_id, "limit": 1, "translate": "codex",
+                    })
+                    assert translated.structuredContent["next_since"] == 1
+                    assert translated.structuredContent["has_more"]
         finally:
             proc.terminate()
             proc.wait(timeout=10)
