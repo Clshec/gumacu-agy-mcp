@@ -144,6 +144,7 @@ _HOME_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9._-]+\\Users\\[A-Za-z0-9._-]+" + _HOME_TAIL),
     re.compile(r"/Users/[A-Za-z0-9._-]+" + _HOME_TAIL),
     re.compile(r"/home/[A-Za-z0-9._-]+" + _HOME_TAIL),
+    re.compile(r"/root" + _HOME_TAIL),
     # Explicit-home reference: ``~alice/`` or ``~alice``. Lead-anchor on a
     # non-word lookbehind so embedded text like ``foo~bar`` won't match.
     re.compile(r"(?<!\w)~[A-Za-z][A-Za-z0-9._-]*" + _HOME_TAIL),

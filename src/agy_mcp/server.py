@@ -30,6 +30,7 @@ a ``/Users/<user>/`` path.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import threading
 import weakref
@@ -43,6 +44,7 @@ from mcp.server.fastmcp import FastMCP
 from agy_mcp import __version__
 from agy_mcp.adapters.agy import AgyPrintBackend
 from agy_mcp.adapters.gemini import GeminiCliBackend
+from agy_mcp.adapters.protocol import ProtocolTranslator
 from agy_mcp.bridge import _run as _bridge_run
 from agy_mcp.config import Config, get_config
 from agy_mcp.doctor import run_doctor
@@ -694,6 +696,7 @@ def agy_read_tool(
     job_id: str,
     since: int = 0,
     translate: OutputProtocol | None = None,
+    limit: int = 100,
 ) -> ReadToolResponse:
     config, safety, _store_, supervisor = _ensure_state()
     resolved_job_id, err = _resolve_job_id_reference(safety, _store_, supervisor, job_id)
@@ -701,10 +704,10 @@ def agy_read_tool(
         return _wrapper_failure(
             safety, ValueError(err), ReadToolResponse,
         )
-    if since < 0:
+    if since < 0 or not 1 <= limit <= 1000:
         return _wrapper_failure(
             safety,
-            ValueError("since must be a non-negative integer"),
+            ValueError("since must be non-negative and limit must be between 1 and 1000"),
             ReadToolResponse,
             job_id=job_id,
             since=since,
@@ -721,15 +724,17 @@ def agy_read_tool(
             job_id=resolved_job_id,
         )
     try:
+        events = supervisor.read_events(resolved_job_id or job_id, since=since)
+        total_remaining = len(events)
+        events = events[:limit]
         if translate is None:
-            events = supervisor.read_events(resolved_job_id or job_id, since=since)
             payload: list[dict[str, Any]] = [
                 e.model_dump(mode="json") for e in events
             ]
         else:
-            payload = supervisor.read_translated(
-                resolved_job_id or job_id, since=since, protocol=translate,
-            )
+            payload = ProtocolTranslator(
+                translate, safety=safety, include_raw=False,
+            ).translate_many(events)
     except Exception as exc:  # noqa: BLE001
         return _wrapper_failure(
             safety, exc, ReadToolResponse, job_id=resolved_job_id, since=since,
@@ -741,6 +746,8 @@ def agy_read_tool(
         translate=translate,
         events=payload,
         count=len(payload),
+        next_since=since + len(events),
+        has_more=total_remaining > len(events),
     )
 
 
@@ -1114,13 +1121,50 @@ def agy_purge_tool(days: int = 30) -> PurgeToolResponse:
 # ---------------------------------------------------------------------------
 
 
-def run() -> None:
+@mcp.tool(name="agy_result_page", description=(
+    "Read a finished job's full final response without summarization or truncation. "
+    "Repeat with next_offset until has_more is false. Secret redaction remains enabled. "
+    "Use agy_read for all intermediate messages."
+))
+def agy_result_page_tool(
+    job_id: str, offset: int = 0, limit: int = 16000,
+    expected_sha256: str | None = None,
+) -> dict[str, Any]:
+    if offset < 0 or not 1 <= limit <= 64000:
+        return {"success": False, "error": "offset must be non-negative; limit must be 1..64000"}
+    result = agy_result_tool(job_id=job_id)
+    if not result.success:
+        return {"success": False, "error": result.error}
+    text = result.result_text
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if expected_sha256 is not None and expected_sha256 != digest:
+        return {"success": False, "error": "result changed; restart pagination at offset 0"}
+    if offset > len(text):
+        return {"success": False, "error": "offset exceeds result length"}
+    end = min(offset + limit, len(text))
+    return {
+        "success": True, "job_id": result.job_id,
+        "session_id": result.record.session_id if result.record else None,
+        "text": text[offset:end], "offset": offset, "next_offset": end,
+        "total_chars": len(text), "has_more": end < len(text),
+        "sha256": digest, "redaction_enabled": True,
+    }
+
+
+def run(transport: str = "stdio", port: int = 8765) -> None:
     """Start the FastMCP stdio server."""
 
     # Materialise singletons before stdio takes over so any configuration
     # error surfaces with a stack trace rather than a closed pipe.
     _ensure_state()
-    mcp.run(transport="stdio")
+    if transport not in {"stdio", "streamable-http"}:
+        raise ValueError("unsupported transport")
+    if not 1 <= port <= 65535:
+        raise ValueError("invalid port")
+    # Remote access belongs behind an authenticated TLS gateway or secure tunnel.
+    mcp.settings.host = "127.0.0.1"
+    mcp.settings.port = port
+    mcp.run(transport=transport)
 
 
 __all__ = [

@@ -471,6 +471,8 @@ class ReadToolResponse(_DictLikeEnvelope):
     translate: OutputProtocol | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
     count: int = 0
+    next_since: int | None = None
+    has_more: bool = False
 
 
 class ResultToolResponse(_DictLikeEnvelope):

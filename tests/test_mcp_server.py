@@ -223,6 +223,7 @@ def test_eleven_tools_registered():
         "agy_status",
         "agy_read",
         "agy_result",
+        "agy_result_page",
         "agy_cancel",
         "agy_sessions",
         "agy_doctor",
