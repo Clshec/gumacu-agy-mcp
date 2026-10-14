@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from mcp.server.fastmcp import FastMCP
-import mcp.types as mcp_types
 
 from agy_mcp.events import (
-    EVENT_CATALOG,
     JOB_CANCELLED_EVENT,
     JOB_COMPLETED_EVENT,
     JOB_FAILED_EVENT,
@@ -174,3 +170,55 @@ async def test_setup_events_protocol_handlers(tmp_path: Path):
     unsub_res = await unsub_handler(unsub_req)
     assert getattr(unsub_res.root, "success", None) is True
     assert store.get(sub_id) is None
+
+
+@pytest.mark.asyncio
+async def test_webhook_dispatch_timeout_and_no_final_response(tmp_path: Path):
+    store = SubscriptionStore(tmp_path / "subscriptions.json")
+    delivery = EventDelivery(
+        mode="webhook",
+        url="https://api.openai.com/v1/webhook_test",
+        secret="whsec_dGVzdHNlY3JldDEyMzQ1Njc4OTA=",
+    )
+    _ = store.add(JOB_FAILED_EVENT, delivery)
+    dispatcher = WebhookDispatcher(store)
+
+    delivered = []
+
+    async def mock_deliver(s, ev, d):
+        delivered.append((s.subscription_id, ev, d))
+        return True
+
+    with patch.object(dispatcher, "deliver_subscription", side_effect=mock_deliver):
+        # 1. Timeout job
+        timeout_rec = JobRecord(
+            job_id="job_to_1",
+            status="timeout",
+            cwd="/test",
+            request={},
+            session_id="sess_to",
+            error="print timeout after 19m30s",
+        )
+        dispatcher.dispatch_job_event(timeout_rec)
+        await asyncio.sleep(0.1)
+
+        # 2. No final response job
+        empty_rec = JobRecord(
+            job_id="job_empty_1",
+            status="no_final_response",
+            cwd="/test",
+            request={},
+            session_id="sess_empty",
+            error="process finished with exit code 0 but produced no final response",
+        )
+        dispatcher.dispatch_job_event(empty_rec)
+        await asyncio.sleep(0.1)
+
+    assert len(delivered) == 2
+    assert delivered[0][1] == JOB_FAILED_EVENT
+    assert delivered[0][2]["status"] == "timeout"
+    assert delivered[0][2]["error"] == "print timeout after 19m30s"
+
+    assert delivered[1][1] == JOB_FAILED_EVENT
+    assert delivered[1][2]["status"] == "no_final_response"
+    assert delivered[1][2]["error"] == "process finished with exit code 0 but produced no final response"

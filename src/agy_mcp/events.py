@@ -16,19 +16,17 @@ import hashlib
 import hmac
 import json
 import logging
-import os
-import re
 import secrets
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Union
 
 import httpx
+import mcp.types as _mcp_types
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
-from agy_mcp.models import JobRecord, JobStatus
+from agy_mcp.models import JobRecord
 from agy_mcp.utils import ensure_directory, safe_write_text, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -82,7 +80,10 @@ PAYLOAD_SCHEMA_FAILED: dict[str, Any] = {
     "properties": {
         "job_id": {"type": "string"},
         "session_id": {"type": "string"},
-        "status": {"type": "string", "enum": ["failed", "upstream_error"]},
+        "status": {
+            "type": "string",
+            "enum": ["failed", "upstream_error", "timeout", "no_final_response"],
+        },
         "finished_at": {"type": "string"},
         "error": {"type": "string"},
         "exit_code": {"type": ["integer", "null"]},
@@ -392,7 +393,14 @@ class WebhookDispatcher:
         sha256: str = "",
     ) -> None:
         """Trigger webhooks for a finalized job."""
-        if record.status not in {"completed", "failed", "cancelled", "upstream_error"}:
+        if record.status not in {
+            "completed",
+            "failed",
+            "cancelled",
+            "upstream_error",
+            "timeout",
+            "no_final_response",
+        }:
             return
 
         if record.status == "completed":
@@ -453,7 +461,6 @@ class WebhookDispatcher:
 # MCP Protocol Handlers (Protocol Version 2026-07-28)
 # ---------------------------------------------------------------------------
 
-import mcp.types as _mcp_types
 
 
 class ListEventsRequest(BaseModel):

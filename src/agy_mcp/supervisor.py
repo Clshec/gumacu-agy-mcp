@@ -36,6 +36,7 @@ Phase 4 review invariants from R3 hand-off:
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import secrets
 import shutil
@@ -46,7 +47,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from agy_mcp.adapters import (
     AdapterRunResult,
@@ -76,6 +77,8 @@ from agy_mcp.worktree import (
     cleanup_worktree,
     create_worktree,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Sink that tees adapter events into the on-disk event log.
@@ -738,10 +741,24 @@ class Supervisor:
 
         if result is None:
             status = "cancelled" if was_cancelled else "failed"
+            if not error:
+                error = "job cancelled by supervisor" if was_cancelled else "failed to run job"
         else:
             session_id_resolved = result.session_id or request.session_id
             exit_code = result.exit_code
-            if result.exit_code == 0 and result.had_upstream_error:
+            result_event = next(
+                (e for e in reversed(result.events) if e.type == "result"),
+                None,
+            )
+            result_subtype = result_event.subtype if result_event else None
+            assistant_text = _pick_assistant_text_from_events(result.events)
+            has_content = bool(assistant_text.strip()) or bool(result.stdout_tail.strip())
+
+            if was_cancelled or result_subtype == "cancelled":
+                status = "cancelled"
+                if not error:
+                    error = "job cancelled by supervisor"
+            elif result.had_upstream_error or result_subtype == "upstream_error":
                 status = "upstream_error"
                 if not error:
                     error = self.safety.redact(
@@ -749,18 +766,32 @@ class Supervisor:
                         or _pick_error_from_events(result.events)
                         or "upstream error",
                     )
-            elif result.exit_code == 0:
-                # A clean exit always wins over a late cancel. Cancel that
-                # arrived while the adapter was still inside its wait
-                # loop will already have set exit_code != 0 via the
-                # terminate cascade, so this branch keeps that flow.
-                status = "completed"
-            elif was_cancelled:
-                status = "cancelled"
-            else:
+            elif getattr(result, "had_timeout", False) or result_subtype in ("timeout", "wrapper_timeout"):
+                status = "timeout"
+                if not error:
+                    error = self.safety.redact(
+                        getattr(result, "timeout_text", None)
+                        or _pick_error_from_events(result.events)
+                        or "execution timed out",
+                    )
+            elif result.exit_code != 0:
                 status = "failed"
                 if not error:
-                    error = _pick_error_from_events(result.events) or "non-zero exit"
+                    error = self.safety.redact(
+                        _pick_error_from_events(result.events)
+                        or f"non-zero exit ({result.exit_code})",
+                    )
+            elif result_subtype == "no_final_response" or (
+                not has_content
+                and request.mode == "execute"
+                and not request.dry_run
+                and result_subtype != "success"
+            ):
+                status = "no_final_response"
+                if not error:
+                    error = "process finished with exit code 0 but produced no final response"
+            else:
+                status = "completed"
 
         # Atomic single-write finalize: mutate the record in memory and
         # call ``update_job`` exactly once so a reader cannot observe a
@@ -1263,6 +1294,13 @@ def _redact_value(value, safety: SafetyPolicy):
             for key, item in value.items()
         }
     return value
+
+
+def _pick_assistant_text_from_events(events: list[CanonicalEvent]) -> str:
+    for event in reversed(events):
+        if event.type == "assistant" and event.text:
+            return event.text
+    return ""
 
 
 def _pick_error_from_events(events: list[CanonicalEvent]) -> str | None:

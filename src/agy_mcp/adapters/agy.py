@@ -111,6 +111,9 @@ _RE_ACCOUNT_INELIGIBLE = re.compile(r"Account ineligible:\s+(.+)", re.IGNORECASE
 _RE_REWIND = re.compile(rf"Rewinding conversation {_UUID_CANON} to step (\d+)")
 _RE_STREAM_START = re.compile(rf"Starting conversation update stream for ({_UUID_CANON})\b")
 _RE_TURN_END = re.compile(r"Stopping conversation stream|Language server shutting down")
+_RE_KLOG_PRINT_TIMEOUT = re.compile(
+    r"Print mode: print timeout after ([^\n]+)", re.IGNORECASE
+)
 
 # Upstream API errors that agy v1.0.0 swallows: writes to klog with severity
 # "E", but exits 0 with empty stdout. Without explicit detection, the wrapper
@@ -512,6 +515,14 @@ class AgyPrintBackend(BaseAdapter):
 
         stdout_text = "".join(ctx.stdout_buf)
         stderr_text = "".join(ctx.stderr_buf)
+        session_id = ctx.seen_session_id[0] or request.session_id
+        recovered_from_transcript = False
+
+        if not stdout_text.strip():
+            recovered = recover_assistant_text_from_transcript(session_id)
+            if recovered:
+                stdout_text = recovered
+                recovered_from_transcript = True
 
         if stdout_text.strip():
             self._emit(
@@ -519,71 +530,79 @@ class AgyPrintBackend(BaseAdapter):
                 CanonicalEvent(
                     type="assistant",
                     subtype="text",
-                    session_id=ctx.seen_session_id[0],
+                    session_id=session_id,
                     role="assistant",
                     text=stdout_text,
                     content=[{"type": "text", "text": stdout_text}],
+                    metadata={"recovered_from_transcript": recovered_from_transcript} if recovered_from_transcript else {},
                 ),
             )
 
         duration_ms = int((time.time() - start) * 1000)
+        has_timeout = timed_out or ctx.had_timeout
+        has_content = bool(stdout_text.strip())
+
         if (
             exit_code == 0
-            and not timed_out
+            and not has_timeout
             and not cancelled
             and not ctx.had_upstream_error
+            and has_content
         ):
             self._emit(
                 ctx,
                 CanonicalEvent(
                     type="result",
                     subtype="success",
-                    session_id=ctx.seen_session_id[0],
+                    session_id=session_id,
                     metadata={
                         "duration_ms": duration_ms,
                         "exit_code": exit_code,
-                        "conversation_id": ctx.seen_session_id[0],
+                        "conversation_id": session_id,
                     },
                 ),
             )
         else:
             if cancelled:
                 subtype = "cancelled"
-            elif timed_out:
-                subtype = "wrapper_timeout"
+                error_text = "job cancelled by supervisor"
+            elif has_timeout:
+                subtype = "timeout"
+                error_text = ctx.first_timeout_text or (
+                    f"agy did not finish within {request.timeout}s"
+                )
             elif ctx.had_upstream_error:
-                # agy exited 0 (or non-zero) but klog showed an upstream
-                # API error. Promote to ``upstream_error`` so callers do
-                # not mis-read silence as success.
                 subtype = "upstream_error"
+                error_text = ctx.first_upstream_error or "upstream error"
+            elif exit_code == 0 and not has_content:
+                subtype = "no_final_response"
+                error_text = "process finished with exit code 0 but produced no final response"
             else:
                 subtype = "error"
-            # Prefer the first upstream error message captured by the klog
-            # tail (already redacted); fall back to stderr otherwise. Keeps
-            # the result envelope's ``text`` field human-readable when agy
-            # itself produced no stderr.
-            error_text = ctx.first_upstream_error or self.safety.redact(stderr_text)
+                error_text = ctx.first_upstream_error or self.safety.redact(stderr_text) or f"exit code {exit_code}"
+
             self._emit(
                 ctx,
                 CanonicalEvent(
                     type="result",
                     subtype=subtype,
-                    session_id=ctx.seen_session_id[0],
-                    text=error_text[:2000],
+                    session_id=session_id,
+                    text=error_text[:2000] if error_text else None,
                     metadata={
                         "duration_ms": duration_ms,
                         "exit_code": exit_code,
-                        "conversation_id": ctx.seen_session_id[0],
-                        "timed_out": timed_out,
+                        "conversation_id": session_id,
+                        "timed_out": has_timeout,
                         "cancelled": cancelled,
                         "had_upstream_error": ctx.had_upstream_error,
+                        "partial": has_content if has_timeout else False,
                     },
                 ),
             )
 
         return AdapterRunResult(
             events=ctx.events,
-            session_id=ctx.seen_session_id[0],
+            session_id=session_id,
             exit_code=exit_code,
             duration_ms=duration_ms,
             stdout_tail=truncate_middle(stdout_text, max_chars=request.max_output_chars),
@@ -594,6 +613,8 @@ class AgyPrintBackend(BaseAdapter):
             artifacts=[],
             had_upstream_error=ctx.had_upstream_error,
             upstream_error_text=ctx.first_upstream_error,
+            had_timeout=has_timeout,
+            timeout_text=ctx.first_timeout_text or (f"agy did not finish within {request.timeout}s" if has_timeout else None),
         )
 
     # ------------------------------------------------------------------
@@ -861,6 +882,22 @@ def _handle_klog_line(line: str, ctx: _RunContext, adapter: AgyPrintBackend) -> 
             CanonicalEvent(type="system", subtype="turn_end", metadata={"raw": safe_msg}),
         )
         return
+    if m := _RE_KLOG_PRINT_TIMEOUT.search(msg):
+        t_msg = adapter.safety.redact(m.group(0))[:1000]
+        with ctx.lock:
+            if not ctx.had_timeout:
+                ctx.had_timeout = True
+                ctx.first_timeout_text = t_msg
+        adapter._emit(
+            ctx,
+            CanonicalEvent(
+                type="error",
+                subtype="timeout",
+                text=t_msg,
+                metadata={"raw_klog_line": safe_msg},
+            ),
+        )
+        return
     # Upstream API errors that agy 1.0.0 swallows. Match after the more
     # specific lifecycle patterns so we never shadow a benign event, and
     # before falling through to the generic klog event so the structured
@@ -989,6 +1026,78 @@ def _open_transcript_no_follow(path: Path):
         except OSError:
             pass
         raise
+
+
+def recover_assistant_text_from_transcript(session_id: str | None) -> str | None:
+    """Best-effort recovery of the latest model response from session transcript.
+
+    Used when Antigravity CLI exits without printing final text to stdout
+    (e.g., inner timeout before turn completion).
+    """
+    if not session_id or not isinstance(session_id, str):
+        return None
+    if "/" in session_id or "\\" in session_id or ".." in session_id:
+        return None
+
+    candidate_dirs: list[Path] = [
+        Path.home() / ".gemini" / "antigravity-cli" / "brain" / session_id,
+        Path.home() / ".gemini" / "brain" / session_id,
+        AGY_LOG_DIR.parent / "brain" / session_id,
+    ]
+    custom_brain = os.environ.get("ANTIGRAVITY_BRAIN_DIR")
+    if custom_brain:
+        candidate_dirs.insert(0, Path(custom_brain) / session_id)
+
+    for session_dir in candidate_dirs:
+        try:
+            if not session_dir.is_dir() or session_dir.is_symlink():
+                continue
+            logs_dir = session_dir / ".system_generated" / "logs"
+            if not logs_dir.is_dir() or logs_dir.is_symlink():
+                continue
+
+            for fname in ("transcript_full.jsonl", "transcript.jsonl"):
+                cand_file = logs_dir / fname
+                if not cand_file.is_file() or cand_file.is_symlink():
+                    continue
+                content = _extract_last_response_from_file(cand_file)
+                if content:
+                    return content
+        except OSError:
+            continue
+    return None
+
+
+def _extract_last_response_from_file(path: Path) -> str | None:
+    try:
+        fp = _open_transcript_no_follow(path)
+    except OSError:
+        return None
+    try:
+        lines = fp.readlines()
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            step_type = entry.get("type")
+            source = entry.get("source")
+            content = entry.get("content")
+            if (step_type == "PLANNER_RESPONSE" or source == "MODEL") and isinstance(content, str) and content.strip():
+                return content.strip()
+    except OSError:
+        pass
+    finally:
+        try:
+            fp.close()
+        except OSError:
+            pass
+    return None
 
 
 # ---------------------------------------------------------------------------

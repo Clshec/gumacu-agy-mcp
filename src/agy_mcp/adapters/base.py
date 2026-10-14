@@ -44,6 +44,8 @@ class AdapterRunResult:
     # message for the BridgeResponse.error field.
     had_upstream_error: bool = False
     upstream_error_text: str | None = None
+    had_timeout: bool = False
+    timeout_text: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +57,7 @@ class AdapterRunResult:
 # up the trailing fragment of identifiers like ``foo-bar``. The MULTILINE
 # anchor is no longer needed because ``-`` boundaries are explicit.
 _FLAG_PATTERN = re.compile(r"(?<![\w.])(-{1,2}[A-Za-z][\w-]*)")
+_RE_STDERR_TIMEOUT = re.compile(r"print timeout after (.+)", re.IGNORECASE)
 
 
 def detect_flags(help_text: str) -> set[str]:
@@ -105,6 +108,8 @@ class _RunContext:
     # the first redacted message for the result envelope.
     had_upstream_error: bool = False
     first_upstream_error: str | None = None
+    had_timeout: bool = False
+    first_timeout_text: str | None = None
 
 
 def _open_spool(path: Path):
@@ -200,6 +205,24 @@ def _drain_stream(
                 break
             with ctx.lock:
                 buf.append(chunk)
+            if label == "stderr" and _RE_STDERR_TIMEOUT.search(chunk):
+                match = _RE_STDERR_TIMEOUT.search(chunk)
+                t_msg = match.group(0).strip() if match else chunk.strip()
+                with ctx.lock:
+                    if not ctx.had_timeout:
+                        ctx.had_timeout = True
+                        ctx.first_timeout_text = t_msg
+                timeout_ev = CanonicalEvent(
+                    type="error",
+                    subtype="timeout",
+                    text=adapter.safety.redact(t_msg) if adapter else t_msg,
+                    metadata={"source": "stderr", "line": adapter.safety.redact(chunk.strip()) if adapter else chunk.strip()},
+                )
+                if adapter is not None:
+                    adapter.emit_event(ctx, timeout_ev)
+                else:
+                    with ctx.lock:
+                        ctx.events.append(timeout_ev)
             # Phase 8 review (Codex P1 #2): a failed spool write must not
             # short-circuit the drain — otherwise pipe back-pressure deadlocks
             # the child process. Close the spool, emit a warning event, keep

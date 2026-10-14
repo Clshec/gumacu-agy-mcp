@@ -517,26 +517,32 @@ def _run_unsafe(
             "agent_messages truncated from "
             f"{original_len} to {len(assistant_text)} chars by max_output_chars"
         )
-    success = result.exit_code == 0 and not result.had_upstream_error
-    if result.had_upstream_error and result.exit_code == 0:
-        # agy v1.0.0 swallows upstream API errors and exits 0. The adapter
-        # already promoted the result envelope's subtype to ``upstream_error``
-        # via klog detection; surface the same failure at the bridge top level
-        # so callers reading only ``success`` / ``status`` / ``error`` (e.g.
-        # an MCP client that does not iterate ``all_messages``) still see it.
-        status = "upstream_error"
-    elif success:
-        status = "completed"
-    else:
-        status = "failed"
-    all_messages = translated if request.return_all_messages else []
+    has_timeout = getattr(result, "had_timeout", False)
+    has_upstream = result.had_upstream_error
+    has_content = bool(assistant_text.strip())
 
-    if success:
-        error_field: str | None = None
-    elif result.had_upstream_error and result.upstream_error_text:
-        error_field = result.upstream_error_text
+    if has_upstream:
+        status = "upstream_error"
+        success = False
+        error_field = result.upstream_error_text or _pick_error_text(result.events) or "upstream error"
+    elif has_timeout:
+        status = "timeout"
+        success = False
+        error_field = getattr(result, "timeout_text", None) or _pick_error_text(result.events) or "execution timed out"
+    elif result.exit_code != 0:
+        status = "failed"
+        success = False
+        error_field = _pick_error_text(result.events) or f"non-zero exit ({result.exit_code})"
+    elif not has_content and not request.dry_run:
+        status = "no_final_response"
+        success = False
+        error_field = "process finished with exit code 0 but produced no final response"
     else:
-        error_field = _pick_error_text(result.events) or "non-zero exit"
+        status = "completed"
+        success = True
+        error_field = None
+
+    all_messages = translated if request.return_all_messages else []
 
     return BridgeResponse(
         success=success,

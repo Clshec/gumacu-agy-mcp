@@ -216,9 +216,18 @@ def watch_job(
     print("Copy and send the following message into your ChatGPT chat:")
     print()
     sess_arg = f", SESSION_ID='{record.session_id}'" if record.session_id else ""
+    if record.status == "completed":
+        status_msg = "انتهى من المهمة بنجاح."
+    elif record.status == "timeout":
+        status_msg = "انتهت مهلة التنفيذ (Timeout) قبل اكتمال المهمة بالكامل."
+    elif record.status == "no_final_response":
+        status_msg = "انتهت العملية دون إصدار رد نهائي."
+    else:
+        status_msg = f"انتهت العملية بالحالة: {record.status}."
+
     print(
-        f'{c.bold}Antigravity انتهى من المهمة بنجاح. '
-        f'استرجع النتيجة الكاملة عبر أداة: '
+        f'{c.bold}Antigravity {status_msg} '
+        f'استرجع النتيجة أو التقرير عبر أداة: '
         f'agy_result_page(job_id="{record.job_id}", offset=0, limit=16000) '
         f'ثم تابع الأوامر التالية في نفس الجلسة ({sess_arg.strip(", ")}).{c.reset}'
     )

@@ -48,6 +48,11 @@ from agy_mcp.adapters.protocol import ProtocolTranslator
 from agy_mcp.bridge import _run as _bridge_run
 from agy_mcp.config import Config, get_config
 from agy_mcp.doctor import run_doctor
+from agy_mcp.events import (
+    SubscriptionStore,
+    WebhookDispatcher,
+    setup_events_protocol,
+)
 from agy_mcp.install import SkillScope, SkillTarget, install_skills
 from agy_mcp.models import (
     BackendName,
@@ -63,11 +68,6 @@ from agy_mcp.models import (
     ResultToolResponse,
     SessionsToolResponse,
     StatusToolResponse,
-)
-from agy_mcp.events import (
-    SubscriptionStore,
-    WebhookDispatcher,
-    setup_events_protocol,
 )
 from agy_mcp.remote_policy import restrict_request, restrict_tools
 from agy_mcp.safety import SafetyPolicy
@@ -104,7 +104,9 @@ _gemini_adapter: GeminiCliBackend | None = None
 _MAX_JOB_ID_LEN = 84
 _JOB_ID_PATTERN = re.compile(r"^job_[A-Za-z0-9_-]{1,80}$")
 _JOB_ID_REFERENCE_PATTERN = _JOB_ID_PATTERN
-_RESULT_JOB_STATUSES = frozenset({"completed", "failed", "cancelled", "upstream_error"})
+_RESULT_JOB_STATUSES = frozenset(
+    {"completed", "failed", "cancelled", "upstream_error", "timeout", "no_final_response"}
+)
 _MAX_SESSION_ID_LEN = 96
 # Conservative charset for SESSION_ID; mirrors models._SESSION_ID_RE so
 # the server-side fast path and the pydantic validator stay in lockstep.
@@ -429,6 +431,18 @@ def _result_text_from_events(
     safety: SafetyPolicy,
 ) -> str:
     """Return the best human-readable result text from stored events."""
+
+    # For no_final_response, the CLI explicitly produced no response text
+    if status == "no_final_response":
+        return ""
+
+    # For timeout, if we have assistant output (e.g. recovered partial text), prefer returning the text
+    if status == "timeout":
+        for event in reversed(events):
+            text = getattr(event, "text", None)
+            if getattr(event, "type", None) == "assistant" and text and text.strip():
+                return safety.redact(text)
+        return ""
 
     for event in reversed(events):
         text = getattr(event, "text", None)
@@ -1177,18 +1191,62 @@ def agy_result_page_tool(
     if not result.success:
         return {"success": False, "error": result.error}
     text = result.result_text
+    record = result.record
+    status = getattr(record, "status", "completed" if text else "unknown") if record else ("completed" if text else "unknown")
+
+    if not text:
+        err_msg = (getattr(record, "error", None) if record else None) or f"job ended with status '{status}' and produced no output"
+        return {
+            "success": False,
+            "status": status,
+            "error": err_msg,
+            "job_id": result.job_id,
+            "session_id": getattr(record, "session_id", None) if record else None,
+            "text": "",
+            "offset": 0,
+            "next_offset": 0,
+            "total_chars": 0,
+            "has_more": False,
+            "redaction_enabled": True,
+        }
+
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     if expected_sha256 is not None and expected_sha256 != digest:
         return {"success": False, "error": "result changed; restart pagination at offset 0"}
     if offset > len(text):
         return {"success": False, "error": "offset exceeds result length"}
     end = min(offset + limit, len(text))
+
+    if status in ("timeout", "failed", "cancelled", "upstream_error", "no_final_response"):
+        err_msg = (getattr(record, "error", None) if record else None) or f"job ended with status '{status}'"
+        return {
+            "success": False,
+            "status": status,
+            "error": err_msg,
+            "partial": True,
+            "job_id": result.job_id,
+            "session_id": getattr(record, "session_id", None) if record else None,
+            "text": text[offset:end],
+            "offset": offset,
+            "next_offset": end,
+            "total_chars": len(text),
+            "has_more": end < len(text),
+            "sha256": digest,
+            "redaction_enabled": True,
+        }
+
     return {
-        "success": True, "job_id": result.job_id,
-        "session_id": result.record.session_id if result.record else None,
-        "text": text[offset:end], "offset": offset, "next_offset": end,
-        "total_chars": len(text), "has_more": end < len(text),
-        "sha256": digest, "redaction_enabled": True,
+        "success": True,
+        "status": "completed",
+        "job_id": result.job_id,
+        "session_id": getattr(record, "session_id", None) if record else None,
+        "text": text[offset:end],
+        "offset": offset,
+        "next_offset": end,
+        "total_chars": len(text),
+        "has_more": end < len(text),
+        "sha256": digest,
+        "redaction_enabled": True,
     }
 
 
