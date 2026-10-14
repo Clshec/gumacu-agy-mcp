@@ -1,0 +1,18 @@
+{
+  "apps": "./.app.json",
+  "author": {
+    "name": "App developer"
+  },
+  "description": "netcup",
+  "interface": {
+    "capabilities": [],
+    "category": "Other",
+    "defaultPrompt": null,
+    "developerName": "App developer",
+    "displayName": "netcup",
+    "longDescription": "netcup",
+    "shortDescription": "netcup"
+  },
+  "name": "dev-6acf79599a7c8191a7eb5b52b4d30c51",
+  "version": "1.0.1"
+}
