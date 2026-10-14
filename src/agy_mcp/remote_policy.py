@@ -104,12 +104,13 @@ def restrict_request(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("remote environment overrides are not allowed")
     if payload.get("backend", "auto") not in {"auto", "agy"}:
         raise ValueError("this remote endpoint permits only the agy backend")
-    if payload.get("worktree"):
+    if payload.get("worktree") and not operator_auth:
         raise ValueError("remote worktree creation is not enabled")
     if not 1 <= payload.get("timeout", 900) <= 1200:
         raise ValueError("remote timeout must be 1..1200 seconds")
 
     sandbox = not (operator_auth and allow_write)
+    worktree = bool(payload.get("worktree", False)) if operator_auth else False
     clean_payload = {k: v for k, v in payload.items() if k not in {"operator_token", "cd"}}
 
     return {
@@ -119,7 +120,7 @@ def restrict_request(payload: dict[str, Any]) -> dict[str, Any]:
         "backend": "agy",
         "allow_write": allow_write if operator_auth else False,
         "mode": mode,
-        "worktree": False,
+        "worktree": worktree,
         "debug": False,
     }
 
