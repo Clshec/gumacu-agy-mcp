@@ -1086,9 +1086,8 @@ def _extract_last_response_from_file(path: Path) -> str | None:
             if not isinstance(entry, dict):
                 continue
             step_type = entry.get("type")
-            source = entry.get("source")
             content = entry.get("content")
-            if (step_type == "PLANNER_RESPONSE" or source == "MODEL") and isinstance(content, str) and content.strip():
+            if step_type == "PLANNER_RESPONSE" and isinstance(content, str) and content.strip():
                 return content.strip()
     except OSError:
         pass
