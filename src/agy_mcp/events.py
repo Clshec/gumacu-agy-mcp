@@ -26,6 +26,7 @@ import httpx
 import mcp.types as _mcp_types
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
+from agy_mcp import __version__
 from agy_mcp.models import JobRecord
 from agy_mcp.utils import ensure_directory, safe_write_text, utc_now_iso
 
@@ -340,7 +341,7 @@ class WebhookDispatcher:
             "webhook-id": webhook_id,
             "webhook-timestamp": str(timestamp),
             "webhook-signature": signature,
-            "User-Agent": "Gumacu-Antigravity-MCP/0.1.9",
+            "User-Agent": f"Gumacu-Antigravity-MCP/{__version__}",
         }
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:

@@ -258,15 +258,30 @@ def _reset_state_for_tests() -> None:
 # ---------------------------------------------------------------------------
 
 
-mcp = FastMCP(
-    name="agy-mcp",
-    instructions=(
-        "Google Antigravity (agy) CLI bridge with long-task supervisor. "
-        "Use ``agy`` for one-shot prompts, ``agy_start`` + ``agy_status`` "
-        "+ ``agy_read`` / ``agy_result`` + ``agy_cancel`` for detached jobs, and "
-        "``agy_doctor`` to check the environment."
-    ),
-)
+try:
+    mcp = FastMCP(
+        name="agy-mcp",
+        version=__version__,
+        instructions=(
+            "Google Antigravity (agy) CLI bridge with long-task supervisor. "
+            "Use ``agy`` for one-shot prompts, ``agy_start`` + ``agy_status`` "
+            "+ ``agy_read`` / ``agy_result`` + ``agy_cancel`` for detached jobs, and "
+            "``agy_doctor`` to check the environment."
+        ),
+    )
+except TypeError:
+    mcp = FastMCP(
+        name="agy-mcp",
+        instructions=(
+            "Google Antigravity (agy) CLI bridge with long-task supervisor. "
+            "Use ``agy`` for one-shot prompts, ``agy_start`` + ``agy_status`` "
+            "+ ``agy_read`` / ``agy_result`` + ``agy_cancel`` for detached jobs, and "
+            "``agy_doctor`` to check the environment."
+        ),
+    )
+
+if hasattr(mcp, "_mcp_server"):
+    mcp._mcp_server.version = __version__
 
 
 # ---------------------------------------------------------------------------

@@ -58,3 +58,14 @@ def test_source_checkout_fallback_version_matches_pyproject():
     fallback_versions = _version_fallback_literals(tree)
 
     assert fallback_versions == [expected]
+
+
+def test_announced_mcp_version_matches_package_version():
+    """Verify that FastMCP and the low-level server advertise the package version in serverInfo."""
+    from agy_mcp import __version__
+    from agy_mcp.server import mcp
+
+    assert mcp._mcp_server.version == __version__
+    init_options = mcp._mcp_server.create_initialization_options()
+    assert init_options.server_version == __version__
+    assert init_options.server_version == "0.1.10"

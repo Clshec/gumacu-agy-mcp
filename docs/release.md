@@ -4,6 +4,17 @@
 发布。本地不需要、也**不应该**配置 PyPI API token；所有 publish
 都走 OIDC 短期凭证。
 
+## Patch Version Policy (إلزامية تحديث رقم الإصدار لكل تحديث)
+
+Every update, fix, or deployment to Gumacu MCP **MUST** bump the patch version (e.g. `0.1.9` -> `0.1.10`) across:
+1. `pyproject.toml` (`[project].version`)
+2. `src/agy_mcp/__init__.py` (`__version__` fallback)
+
+**Why this is mandatory:**
+- `FastMCP` advertises `serverInfo.version` during the MCP JSON-RPC `initialize` handshake with ChatGPT and Codex.
+- Bumping the patch version ensures that MCP clients and operators can immediately verify which revision is active.
+- `tests/test_version.py` validates that `pyproject.toml`, `__init__.py`, and the live MCP `serverInfo.version` stay 100% in sync.
+
 ## 一次性设置（首次发布前）
 
 ### 1. 在 GitHub 仓库建 environment
