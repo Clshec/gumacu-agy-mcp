@@ -218,6 +218,10 @@ class SessionStore:
             record.error = error
         return self.update_job(record)
 
+    def paths(self, job_id: str) -> JobPaths:
+        """Return the JobPaths structure for a specific job_id."""
+        return JobPaths.for_job(self.root, job_id)
+
     # ------------------------------------------------------------------
     # Event log
     # ------------------------------------------------------------------

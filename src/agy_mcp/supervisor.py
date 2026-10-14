@@ -35,6 +35,7 @@ Phase 4 review invariants from R3 hand-off:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import shutil
@@ -160,6 +161,7 @@ class Supervisor:
         safety: SafetyPolicy | None = None,
         adapter_factory: AdapterFactory | None = None,
         max_concurrent_jobs: int = 8,
+        events_dispatcher: Any | None = None,
     ) -> None:
         self.store = store
         self.config = config or get_config()
@@ -167,6 +169,7 @@ class Supervisor:
         # Default adapter factory routes via the bridge selector so the
         # supervisor and the synchronous path stay in lockstep.
         self._adapter_factory = adapter_factory or self._default_adapter_factory
+        self._events_dispatcher = events_dispatcher
         self._jobs: dict[str, _JobHandle] = {}
         self._starting_jobs: set[str] = set()
         self._lock = threading.RLock()
@@ -540,6 +543,11 @@ class Supervisor:
                 status="failed",
                 error=self.safety.redact(_RECONCILE_ERROR),
             )
+            if self._events_dispatcher is not None and finalised is not None:
+                try:
+                    self._events_dispatcher.dispatch_job_event(finalised)
+                except Exception:
+                    pass
             return self._public_record(finalised or fresh)
 
     def read_events(self, job_id: str, *, since: int = 0) -> list[CanonicalEvent]:
@@ -781,6 +789,46 @@ class Supervisor:
         if route_warnings:
             record.extra.setdefault("route_warnings", list(route_warnings))
         self.store.update_job(record)
+        if self._events_dispatcher is not None:
+            preview = ""
+            if result is not None and getattr(result, "events", None):
+                for ev in reversed(result.events):
+                    if getattr(ev, "type", None) in {"assistant", "result"} and getattr(ev, "text", None):
+                        preview = ev.text
+                        break
+            if not preview and result is not None and getattr(result, "output", None):
+                preview = result.output
+            if not preview:
+                try:
+                    paths = self.store.paths(record.job_id)
+                    if paths.stdout.is_file():
+                        preview = paths.stdout.read_text(encoding="utf-8")[:1000]
+                except Exception:
+                    pass
+
+            sha256 = ""
+            total_chars = len(preview)
+            try:
+                paths = self.store.paths(record.job_id)
+                if paths.stdout.is_file():
+                    out_bytes = paths.stdout.read_bytes()
+                    sha256 = hashlib.sha256(out_bytes).hexdigest()
+                    total_chars = len(out_bytes.decode("utf-8", errors="replace"))
+                elif preview:
+                    sha256 = hashlib.sha256(preview.encode("utf-8")).hexdigest()
+            except Exception:
+                if preview:
+                    sha256 = hashlib.sha256(preview.encode("utf-8")).hexdigest()
+
+            try:
+                self._events_dispatcher.dispatch_job_event(
+                    record,
+                    result_preview=preview,
+                    total_chars=total_chars,
+                    sha256=sha256,
+                )
+            except Exception as ex:
+                logger.warning("Error dispatching job event: %s", ex)
 
 
 # ---------------------------------------------------------------------------

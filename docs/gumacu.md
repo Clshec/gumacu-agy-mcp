@@ -158,4 +158,53 @@ Verification:
 - Real diagnostic task re-verified post-reboot: `agy` successfully analyzed fresh reboot metrics, returned Arabic breakdown, and retained session `eb683331-b2a3-4396-94a1-7b3063b7398f`.
 - Tunnel client daemon running actively (`🟢 tunnel-client started`, `readiness=1`) connecting `tunnel_6ace3926c4e48191aeced4035a6997e5` to OpenAI control plane.
 
+## Mode 1 & Mode 2 Architecture & Integration
+
+### Mode 1: ChatGPT Work — Event-Driven Management (`MCP Events`)
+
+Implemented per OpenAI MCP Events protocol specification (Protocol version `2026-07-28`):
+1. **Protocol Handlers**:
+   - `events/list`: Exposes supported events (`job.completed`, `job.failed`, `job.cancelled`) with full input and payload schemas.
+   - `events/subscribe`: Registers webhook subscriptions with secret signing keys (`whsec_...` or raw strings) and optional filters (`job_id`, `session_id`).
+   - `events/unsubscribe`: Safely unregisters active subscriptions by `subscription_id` / `subscriptionId`.
+   - Protocol negotiation: Extended `mcp.server.session.SUPPORTED_PROTOCOL_VERSIONS` to include `2026-07-28`.
+   - Capabilities: Declared `events: {"subscribe": True, "listChanged": True}` in `ServerCapabilities`.
+2. **Standard Webhooks Delivery & Hardening**:
+   - Signature: HMAC-SHA256 computed over `{webhook_id}.{timestamp}.{body}` per Standard Webhooks specification.
+   - Headers: `webhook-id`, `webhook-timestamp`, `webhook-signature` (`v1,<base64>`), `User-Agent`.
+   - Subscription Store: File-backed, thread-safe JSON storage (`subscriptions.json` in session store root) persisted across process restarts.
+   - Webhook Dispatcher: Asynchronous delivery, exponential backoff retries (3 attempts), deduplication cache (`job_id:status:subscription_id`) preventing repeated duplicate webhooks.
+3. **Trigger Workflow in ChatGPT Work**:
+   - ChatGPT Work registers event subscriptions via `events/subscribe` during setup.
+   - When Antigravity completes a task, the bridge signs and delivers the webhook payload containing `job_id`, `session_id`, `status`, `finished_at`, `result_preview`, and `sha256`.
+   - ChatGPT Work is notified immediately upon completion and continues turn execution within the same `SESSION_ID`.
+
+### Mode 2: ChatGPT Normal (العادي) — Terminal Live Monitoring (`agy-watch`)
+
+Preserves the existing 6 controlled MCP tools without requiring external webhooks or background chat wakeups (which personal ChatGPT accounts do not support):
+1. **Interactive CLI Watcher (`agy-watch`)**:
+   - Entry point: `agy-watch --latest` or `agy-watch --job <id>` (installed as console script via `pyproject.toml`).
+   - `--wait-new`: Waits until a newly created job starts, ideal when starting monitoring before prompting ChatGPT.
+   - Streams live thoughts, tool calls, and outputs formatted with ANSI colors.
+   - On completion, outputs a summary banner with runtime, session ID, result preview, and the exact Arabic prompt to copy-paste into ChatGPT.
+2. **Windows SSH Helper Runner**:
+   - Script: `scripts/gumacu_watch_ssh.py`.
+   - Allows operators on Windows to monitor remote Netcup jobs in real-time over SSH without logging in manually:
+     `python scripts/gumacu_watch_ssh.py --latest`
+     `python scripts/gumacu_watch_ssh.py --latest --wait-new`
+     `python scripts/gumacu_watch_ssh.py --job <job_id>`
+3. **Manual Continuation Workflow**:
+   - User instructs ordinary ChatGPT: `اطلب من Antigravity فحص سبب ارتفاع Load Average`.
+   - ChatGPT calls `agy_start(...)` and returns `status="running"` and `job_id`.
+   - User watches real-time progress via `python scripts/gumacu_watch_ssh.py --latest`.
+   - Once completed, user pastes the generated message into ChatGPT:
+     `Antigravity انتهى من المهمة بنجاح. استرجع النتيجة الكاملة عبر أداة: agy_result_page(job_id="...", offset=0, limit=16000) ثم تابع الأوامر التالية في نفس الجلسة (SESSION_ID='...').`
+   - ChatGPT retrieves the full, unsummarized result using `agy_result_page` and continues next steps seamlessly with `SESSION_ID`.
+
+### Verification Suite
+- Unit & Protocol tests: `tests/test_events.py` and `tests/test_watch.py` (8/8 passed).
+- Full regression suite on Netcup Linux: **577 passed** (0 failures).
+- Real SSH watcher verification: `python scripts/gumacu_watch_ssh.py --latest` successfully connected, streamed previous turn events, and generated exact ChatGPT prompt banner.
+
+
 

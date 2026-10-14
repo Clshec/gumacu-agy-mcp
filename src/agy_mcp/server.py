@@ -64,6 +64,11 @@ from agy_mcp.models import (
     SessionsToolResponse,
     StatusToolResponse,
 )
+from agy_mcp.events import (
+    SubscriptionStore,
+    WebhookDispatcher,
+    setup_events_protocol,
+)
 from agy_mcp.remote_policy import restrict_request, restrict_tools
 from agy_mcp.safety import SafetyPolicy
 from agy_mcp.session_store import SessionStore
@@ -80,6 +85,9 @@ _config: Config | None = None
 _safety: SafetyPolicy | None = None
 _store: SessionStore | None = None
 _supervisor: Supervisor | None = None
+_subscription_store: SubscriptionStore | None = None
+_webhook_dispatcher: WebhookDispatcher | None = None
+_events_initialized: bool = False
 # Cached adapters for the doctor probe so we don't pay 4 subprocess calls
 # (one help + one version per backend) on every ``agy_doctor`` invocation.
 # Phase 5 R1 arch P1.5.
@@ -135,7 +143,7 @@ _PURGE_MAX_DAYS = 365 * 10
 
 
 def _ensure_state() -> tuple[Config, SafetyPolicy, SessionStore, Supervisor]:
-    global _config, _safety, _store, _supervisor
+    global _config, _safety, _store, _supervisor, _subscription_store, _webhook_dispatcher, _events_initialized
     with _state_lock:
         if _config is None:
             _config = get_config()
@@ -143,11 +151,28 @@ def _ensure_state() -> tuple[Config, SafetyPolicy, SessionStore, Supervisor]:
             _safety = SafetyPolicy.from_config(_config)
         if _store is None:
             _store = SessionStore(Path(_config.session_store_root()).expanduser())
+        if _subscription_store is None:
+            sub_path = _store.root / "subscriptions.json"
+            _subscription_store = SubscriptionStore(sub_path)
+            _webhook_dispatcher = WebhookDispatcher(_subscription_store)
         if _supervisor is None:
             _supervisor = Supervisor(
-                store=_store, config=_config, safety=_safety,
+                store=_store,
+                config=_config,
+                safety=_safety,
+                events_dispatcher=_webhook_dispatcher,
             )
+        if not _events_initialized:
+            setup_events_protocol(mcp, _subscription_store)
+            _events_initialized = True
         return _config, _safety, _store, _supervisor
+
+
+def _ensure_events_state() -> tuple[SubscriptionStore, WebhookDispatcher]:
+    _ensure_state()
+    assert _subscription_store is not None
+    assert _webhook_dispatcher is not None
+    return _subscription_store, _webhook_dispatcher
 
 
 def _ensure_adapters(*, force_refresh: bool = False) -> tuple[AgyPrintBackend, GeminiCliBackend]:
@@ -211,7 +236,7 @@ def _reset_state_for_tests() -> None:
     module-level globals — keep it that way (Phase 5 R2 P3.7).
     """
 
-    global _config, _safety, _store, _supervisor, _agy_adapter, _gemini_adapter
+    global _config, _safety, _store, _supervisor, _agy_adapter, _gemini_adapter, _subscription_store, _webhook_dispatcher, _events_initialized
     with _state_lock:
         _config = None
         _safety = None
@@ -219,6 +244,9 @@ def _reset_state_for_tests() -> None:
         _supervisor = None
         _agy_adapter = None
         _gemini_adapter = None
+        _subscription_store = None
+        _webhook_dispatcher = None
+        _events_initialized = False
     with _bridge_limiter_lock:
         _bridge_limiters_by_loop.clear()
 
@@ -1183,4 +1211,5 @@ __all__ = [
     "agy_tool",
     "mcp",
     "run",
+    "_ensure_events_state",
 ]
