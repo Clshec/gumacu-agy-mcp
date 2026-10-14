@@ -154,4 +154,8 @@ Verification:
   analysis of CPU, memory (93% utilization), Rook-Ceph, Rancher, and Kubernetes workloads.
 - Windows tunnel runner updated with clean unquoted arguments, preventing flag collision (`-m`).
 - Active tunnel daemon polling OpenAI control plane continuously (`readiness=1`, status 204).
+- Post-reboot recovery verified: runtime re-staged on Netcup tmpfs (`pip-26.2.1` bootstrap wheel + `agy_mcp` editable venv).
+- Real diagnostic task re-verified post-reboot: `agy` successfully analyzed fresh reboot metrics, returned Arabic breakdown, and retained session `eb683331-b2a3-4396-94a1-7b3063b7398f`.
+- Tunnel client daemon running actively (`🟢 tunnel-client started`, `readiness=1`) connecting `tunnel_6ace3926c4e48191aeced4035a6997e5` to OpenAI control plane.
+
 
