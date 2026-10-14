@@ -567,7 +567,7 @@ class AgyPrintBackend(BaseAdapter):
                 subtype = "cancelled"
                 error_text = "job cancelled by supervisor"
             elif has_timeout:
-                subtype = "timeout"
+                subtype = "wrapper_timeout" if timed_out else "timeout"
                 error_text = ctx.first_timeout_text or (
                     f"agy did not finish within {request.timeout}s"
                 )
