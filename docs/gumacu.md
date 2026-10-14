@@ -206,5 +206,43 @@ Preserves the existing 6 controlled MCP tools without requiring external webhook
 - Full regression suite on Netcup Linux: **577 passed** (0 failures).
 - Real SSH watcher verification: `python scripts/gumacu_watch_ssh.py --latest` successfully connected, streamed previous turn events, and generated exact ChatGPT prompt banner.
 
+## Mode 3: Codex & ChatGPT Work Operator Execution (`operator` Profile)
+
+Enables ChatGPT Codex, ChatGPT Work, and administrative operators to execute tasks, modify files, and operate inside authorized repositories on Netcup when permitted, while keeping the default `controlled` profile strictly safe for ordinary ChatGPT.
+
+### 1. The Addressed Codex Errors
+When Codex attempted:
+```python
+agy_start(mode="execute", allow_write=True, cd="/root/gumacu-infrastructure")
+```
+It previously failed due to:
+1. `remote execution/write modes are not enabled`: `remote_policy.py` unconditionally rejected `allow_write=True` and `mode="execute"` under `controlled` profile.
+2. `workspace is outside the approved root`: `GUMACU_ALLOWED_WORKSPACE` was locked to the single `/tmp/.../workspace` directory and did not support `/root/gumacu-infrastructure`.
+
+### 2. Architecture & Policy Enforcement
+1. **Multi-Workspace Approval (`GUMACU_ALLOWED_WORKSPACES`)**:
+   - Accepts multiple absolute paths separated by `:` or `;` or `,`.
+   - On Netcup: `GUMACU_ALLOWED_WORKSPACES=/root/gumacu-infrastructure:/tmp/gumacu-agy-review.WyP04n3d/workspace`.
+   - Strict canonicalization with `resolve(strict=True)` guarantees symlinks pointing outside approved roots and relative traversal (`..`) are rejected with `workspace is outside the approved root`.
+2. **Dual-Gate Authorization**:
+   - **Connection-Level Profile**: `GUMACU_REMOTE_PROFILE=operator` (or `controlled-write`) explicitly grants execution/write capabilities.
+   - **Token-Level Elevation**: When running in `controlled` profile, passing `operator_token` matching `GUMACU_OPERATOR_TOKEN` (via `secrets.compare_digest`) safely elevates the specific request without opening the profile globally.
+   - Without operator authorization, `mode="execute"` and `allow_write=True` are strictly rejected with `remote execution/write modes are not enabled`.
+3. **Headless Execution Bridge (`adapters/agy.py`)**:
+   - Detects `--mode` support in `agy 1.3.4+`.
+   - Maps `mode="plan"` -> `--mode plan`, `mode="execute"` -> `--mode auto`.
+   - When `allow_write=True`, passes `--dangerously-skip-permissions` so Antigravity executes tool modifications headlessly without blocking on interactive prompts.
+4. **Audit Trail**:
+   - Supervisor emits a `system/operator_audit` canonical event to `events.jsonl` on every authorized write/execution run, logging timestamps, target cwd, mode, and parameters.
+5. **Codex Client Profile**:
+   - Provided in `deploy/codex-netcup-operator.toml` using direct OpenSSH stdio to Netcup with `GUMACU_REMOTE_PROFILE=operator`.
+
+### 3. Live Verification Matrix
+- **Test Suite**: 216 tests passed on Netcup Linux (`test_remote_policy.py`, `test_mcp_server.py`, `test_supervisor.py`) with 0 failures.
+- **Controlled Rejection**: Confirmed live rejection of `mode="execute"` under `controlled` profile.
+- **Root Traversal Rejection**: Confirmed live rejection of unapproved path `/etc` under `operator` profile.
+- **Live Antigravity Creation & Cleanup**: Executed headless file creation (`probe_verify.txt`), verified content, and cleanly removed within 10 seconds.
+- **Live Infrastructure Project Reading**: Executed prompt against `/root/gumacu-infrastructure` via `mode="execute"`, accurately retrieving repository heading.
+
 
 

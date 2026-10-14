@@ -3,35 +3,103 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
+import secrets
 from typing import Any
 
 READ_TOOLS = frozenset({"agy_status", "agy_read", "agy_result_page", "agy_sessions"})
 CONTROLLED_TOOLS = READ_TOOLS | {"agy_start", "agy_cancel"}
+OPERATOR_TOOLS = CONTROLLED_TOOLS | {"agy", "agy_continue", "agy_result", "agy_doctor"}
+VALID_PROFILES = frozenset({"local", "read-only", "controlled", "controlled-write", "operator"})
 
 
 def remote_profile() -> str:
     profile = os.environ.get("GUMACU_REMOTE_PROFILE", "local")
-    if profile not in {"local", "read-only", "controlled"}:
+    if profile not in VALID_PROFILES:
         raise ValueError("invalid GUMACU_REMOTE_PROFILE")
     return profile
 
 
+def get_approved_workspaces() -> list[Path]:
+    raw_list: list[str] = []
+    if "GUMACU_ALLOWED_WORKSPACES" in os.environ:
+        raw = os.environ["GUMACU_ALLOWED_WORKSPACES"]
+        delimiters = r"[,;]+" if os.name == "nt" else r"[:,;]+"
+        parts = re.split(delimiters, raw)
+        raw_list.extend(p.strip() for p in parts if p.strip())
+    elif "GUMACU_ALLOWED_WORKSPACE" in os.environ:
+        val = os.environ["GUMACU_ALLOWED_WORKSPACE"].strip()
+        if val:
+            raw_list.append(val)
+
+    if not raw_list:
+        raise ValueError("controlled profile requires an absolute approved workspace")
+
+    roots: list[Path] = []
+    for item in raw_list:
+        p = Path(item)
+        if not p.is_absolute():
+            raise ValueError(f"approved workspace must be absolute: {item}")
+        try:
+            resolved = p.resolve(strict=True)
+        except OSError as exc:
+            raise ValueError(f"approved workspace path error {item}: {exc}")
+        if not resolved.is_dir():
+            raise ValueError(f"approved workspace is not a directory: {item}")
+        roots.append(resolved)
+
+    if not roots:
+        raise ValueError("controlled profile requires an absolute approved workspace")
+    return roots
+
+
+def validate_workspace(requested: str, roots: list[Path]) -> Path:
+    if not requested or requested == ".":
+        return roots[0]
+    try:
+        target = Path(requested).resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"workspace path error: {exc}")
+    if not target.is_dir() or not any(target == r or target.is_relative_to(r) for r in roots):
+        raise ValueError("workspace is outside the approved root")
+    return target
+
+
+def is_operator_authorized(profile: str, payload: dict[str, Any]) -> bool:
+    if profile in {"local", "operator", "controlled-write"}:
+        return True
+    server_token = os.environ.get("GUMACU_OPERATOR_TOKEN", "").strip()
+    client_token = payload.get("operator_token")
+    if client_token is not None:
+        if server_token and secrets.compare_digest(str(client_token), server_token):
+            return True
+        raise ValueError("invalid operator token")
+    return False
+
+
 def restrict_request(payload: dict[str, Any]) -> dict[str, Any]:
+    clean_payload = {k: v for k, v in payload.items() if k not in {"operator_token", "cd"}}
     profile = remote_profile()
     if profile == "local":
-        return payload
+        return clean_payload
     if profile == "read-only":
         raise ValueError("remote profile does not permit starting jobs")
-    root_value = os.environ.get("GUMACU_ALLOWED_WORKSPACE", "")
-    if not root_value or not Path(root_value).is_absolute():
-        raise ValueError("controlled profile requires an absolute approved workspace")
-    root = Path(root_value).resolve(strict=True)
-    requested = payload.get("cwd", ".")
-    cwd = root if requested == "." else Path(requested).resolve(strict=True)
-    if not cwd.is_dir() or not cwd.is_relative_to(root):
-        raise ValueError("workspace is outside the approved root")
-    if payload.get("allow_write") or payload.get("mode", "ask") not in {"ask", "plan"}:
-        raise ValueError("remote execution/write modes are not enabled")
+
+    roots = get_approved_workspaces()
+    requested_cwd = payload.get("cwd") or payload.get("cd") or "."
+    cwd = validate_workspace(str(requested_cwd), roots)
+
+    operator_auth = is_operator_authorized(profile, payload)
+
+    mode = payload.get("mode", "ask")
+    allow_write = bool(payload.get("allow_write", False))
+
+    if allow_write or mode not in {"ask", "plan"}:
+        if not operator_auth:
+            raise ValueError("remote execution/write modes are not enabled")
+        if mode not in {"ask", "plan", "execute"}:
+            raise ValueError(f"unsupported mode: {mode}")
+
     if payload.get("extra_env"):
         raise ValueError("remote environment overrides are not allowed")
     if payload.get("backend", "auto") not in {"auto", "agy"}:
@@ -40,15 +108,35 @@ def restrict_request(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("remote worktree creation is not enabled")
     if not 1 <= payload.get("timeout", 900) <= 1200:
         raise ValueError("remote timeout must be 1..1200 seconds")
-    return {**payload, "cwd": str(cwd), "sandbox": True, "backend": "agy",
-            "allow_write": False, "worktree": False, "debug": False}
+
+    sandbox = not (operator_auth and allow_write)
+    clean_payload = {k: v for k, v in payload.items() if k not in {"operator_token", "cd"}}
+
+    return {
+        **clean_payload,
+        "cwd": str(cwd),
+        "sandbox": sandbox,
+        "backend": "agy",
+        "allow_write": allow_write if operator_auth else False,
+        "mode": mode,
+        "worktree": False,
+        "debug": False,
+    }
 
 
 def restrict_tools(mcp: Any) -> None:
     profile = remote_profile()
     if profile == "local":
         return
-    allowed = READ_TOOLS if profile == "read-only" else CONTROLLED_TOOLS
+    if profile == "read-only":
+        allowed = READ_TOOLS
+    elif profile == "controlled":
+        allowed = CONTROLLED_TOOLS
+    elif profile in {"operator", "controlled-write"}:
+        allowed = OPERATOR_TOOLS
+    else:
+        allowed = READ_TOOLS
+
     for name in list(mcp._tool_manager._tools):
         if name not in allowed:
             mcp.remove_tool(name)

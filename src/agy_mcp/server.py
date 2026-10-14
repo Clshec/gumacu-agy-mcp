@@ -492,6 +492,8 @@ async def agy_tool(
     debug: bool = False,
     dry_run: bool = False,
     extra_env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    operator_token: str | None = None,
 ) -> BridgeResponse:
     # Phase 5 R4 P3.11: ``extra_env`` keeps ``| None = None`` on the
     # tool surface (MCP clients omit the key entirely on most callers)
@@ -501,15 +503,16 @@ async def agy_tool(
     # that is intentional and documented here so a future schema audit
     # doesn't try to "fix" it back to a bare ``object``.
     config, safety, _store_, _supervisor_ = _ensure_state()
+    effective_cwd = cwd if cwd is not None else cd
     if SESSION_ID is not None:
         err = _validate_session_id(safety, SESSION_ID)
         if err is not None:
-            return _structured_failure(safety, ValueError(err), cwd=cd)
+            return _structured_failure(safety, ValueError(err), cwd=effective_cwd)
     try:
         request = _build_request(
             {
                 "prompt": PROMPT,
-                "cwd": cd,
+                "cwd": effective_cwd,
                 "session_id": SESSION_ID,
                 "model": model,
                 "sandbox": sandbox,
@@ -523,10 +526,11 @@ async def agy_tool(
                 "debug": debug,
                 "dry_run": dry_run,
                 "extra_env": extra_env or {},
+                "operator_token": operator_token,
             }
         )
     except Exception as exc:  # noqa: BLE001 - validation guard
-        return _structured_failure(safety, exc, cwd=cd)
+        return _structured_failure(safety, exc, cwd=effective_cwd)
     # ``_bridge_run`` launches the agy subprocess and blocks until it
     # finishes — offload to a worker thread so the FastMCP asyncio loop
     # stays free to dispatch other tool calls. (Phase 5 R1 arch P1.1.)
@@ -569,20 +573,23 @@ async def agy_continue_tool(
     debug: bool = False,
     dry_run: bool = False,
     extra_env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    operator_token: str | None = None,
 ) -> BridgeResponse:
     config, safety, _store_, _supervisor_ = _ensure_state()
+    effective_cwd = cwd if cwd is not None else cd
     if not SESSION_ID:
         return _structured_failure(
-            safety, ValueError("SESSION_ID is required for agy_continue"), cwd=cd,
+            safety, ValueError("SESSION_ID is required for agy_continue"), cwd=effective_cwd,
         )
     err = _validate_session_id(safety, SESSION_ID)
     if err is not None:
-        return _structured_failure(safety, ValueError(err), cwd=cd)
+        return _structured_failure(safety, ValueError(err), cwd=effective_cwd)
     try:
         request = _build_request(
             {
                 "prompt": PROMPT,
-                "cwd": cd,
+                "cwd": effective_cwd,
                 "session_id": SESSION_ID,
                 "model": model,
                 "sandbox": sandbox,
@@ -596,10 +603,11 @@ async def agy_continue_tool(
                 "debug": debug,
                 "dry_run": dry_run,
                 "extra_env": extra_env or {},
+                "operator_token": operator_token,
             }
         )
     except Exception as exc:  # noqa: BLE001
-        return _structured_failure(safety, exc, cwd=cd)
+        return _structured_failure(safety, exc, cwd=effective_cwd)
     limiter = await _get_bridge_limiter()
     response = await anyio.to_thread.run_sync(
         _bridge_run, request, config, safety, limiter=limiter,
@@ -635,17 +643,20 @@ def agy_start_tool(
     debug: bool = False,
     extra_env: dict[str, str] | None = None,
     job_id: str | None = None,
+    cwd: str | None = None,
+    operator_token: str | None = None,
 ) -> BridgeResponse:
     config, safety, _store_, supervisor = _ensure_state()
+    effective_cwd = cwd if cwd is not None else cd
     if SESSION_ID is not None:
         err = _validate_session_id(safety, SESSION_ID)
         if err is not None:
-            return _structured_failure(safety, ValueError(err), cwd=cd)
+            return _structured_failure(safety, ValueError(err), cwd=effective_cwd)
     try:
         request = _build_request(
             {
                 "prompt": PROMPT,
-                "cwd": cd,
+                "cwd": effective_cwd,
                 "session_id": SESSION_ID,
                 "model": model,
                 "sandbox": sandbox,
@@ -659,18 +670,19 @@ def agy_start_tool(
                 "output_protocol": output_protocol,
                 "debug": debug,
                 "extra_env": extra_env or {},
+                "operator_token": operator_token,
             }
         )
     except Exception as exc:  # noqa: BLE001
-        return _structured_failure(safety, exc, cwd=cd)
+        return _structured_failure(safety, exc, cwd=effective_cwd)
     if job_id is not None:
         err = _validate_job_id(safety, job_id)
         if err is not None:
-            return _structured_failure(safety, ValueError(err), cwd=cd)
+            return _structured_failure(safety, ValueError(err), cwd=effective_cwd)
     try:
         response = supervisor.start(request, job_id=job_id)
     except Exception as exc:  # noqa: BLE001 - top-level guard
-        return _structured_failure(safety, exc, cwd=cd)
+        return _structured_failure(safety, exc, cwd=effective_cwd)
     return response
 
 

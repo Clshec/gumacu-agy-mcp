@@ -613,6 +613,20 @@ class Supervisor:
     ) -> None:
         paths = JobPaths.for_job(self.store.root, job_id)
         sink = StoreEventSink(self.store, job_id)
+        if request.allow_write or request.mode == "execute":
+            sink.emit(
+                CanonicalEvent(
+                    type="system",
+                    subtype="operator_audit",
+                    session_id=request.session_id,
+                    text=f"Authorized operator execution in {request.cwd} (mode={request.mode}, allow_write={request.allow_write})",
+                    metadata={
+                        "cwd": str(request.cwd),
+                        "mode": request.mode,
+                        "allow_write": request.allow_write,
+                    },
+                )
+            )
         result: AdapterRunResult | None = None
         run_error: str | None = None
         try:

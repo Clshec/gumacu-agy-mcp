@@ -188,6 +188,7 @@ class AgyPrintBackend(BaseAdapter):
         cap.supports_dangerously_skip_permissions = has_flag(
             text, "--dangerously-skip-permissions"
         )
+        cap.supports_mode = has_flag(text, "--mode")
         # agy v1.0.0 has no JSON / stream-json output today; surface explicitly.
         cap.supports_streaming = False
         cap.supports_tool_events = False
@@ -283,6 +284,13 @@ class AgyPrintBackend(BaseAdapter):
             argv += ["--log-file", str(log_path)]
         if request.sandbox and cap.supports_sandbox:
             argv.append("--sandbox")
+        if cap.supports_mode:
+            if request.mode == "plan":
+                argv += ["--mode", "plan"]
+            elif request.mode == "execute":
+                argv += ["--mode", "auto"]
+        if request.allow_write and cap.supports_dangerously_skip_permissions:
+            argv.append("--dangerously-skip-permissions")
         if request.session_id:
             if cap.supports_conversation:
                 # ``--conversation=<id>`` for the same reason as --print=

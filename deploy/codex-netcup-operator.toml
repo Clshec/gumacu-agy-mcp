@@ -1,0 +1,17 @@
+# Codex operator profile for Gumacu Antigravity MCP on Netcup.
+# Enables mode="execute", allow_write=True, and access to approved workspaces:
+# 1. /root/gumacu-infrastructure
+# 2. /tmp/gumacu-agy-review.WyP04n3d/workspace
+[mcp_servers.gumacu_netcup_operator]
+command = 'C:\Windows\System32\OpenSSH\ssh.exe'
+args = [
+  "-i", 'C:\Users\TechnoHouse\.ssh\hhh.pem',
+  "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+  "root@159.195.65.10",
+  "env GUMACU_REMOTE_PROFILE=operator GUMACU_ALLOWED_WORKSPACES=/root/gumacu-infrastructure:/tmp/gumacu-agy-review.WyP04n3d/workspace AGY_MCP_SESSION_ROOT=/tmp/gumacu-agy-review.WyP04n3d/live-sessions /tmp/gumacu-agy-review.WyP04n3d/venv/bin/python -m agy_mcp.cli",
+]
+startup_timeout_sec = 30
+tool_timeout_sec = 180
+
+[mcp_servers.gumacu_netcup_operator.env]
+PROGRAMDATA = 'C:\ProgramData'
