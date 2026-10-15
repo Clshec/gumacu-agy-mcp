@@ -192,7 +192,12 @@ class AgyPrintBackend(BaseAdapter):
             text, "--dangerously-skip-permissions"
         )
         cap.supports_mode = has_flag(text, "--mode")
-        # agy v1.0.0 has no JSON / stream-json output today; surface explicitly.
+        # Priority 3 Assessment (Realtime Tool Events):
+        # Current Antigravity CLI (agy v1.0.0) operates in non-interactive `--print` mode
+        # with plain text/ANSI output and does not emit structured JSON tool streaming tokens.
+        # Downstream EventSink and ProtocolTranslator infrastructure are fully prepared to
+        # handle tool events once `agy` exposes a `--output-protocol stream-json` or `--stream-tools`
+        # flag. Per safety guidelines, keep `supports_tool_events = False` until verified capture.
         cap.supports_streaming = False
         cap.supports_tool_events = False
 

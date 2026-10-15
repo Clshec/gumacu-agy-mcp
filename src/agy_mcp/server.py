@@ -53,6 +53,7 @@ from agy_mcp.events import (
     WebhookDispatcher,
     setup_events_protocol,
 )
+from agy_mcp.orchestrator import Orchestrator
 from agy_mcp.install import SkillScope, SkillTarget, install_skills
 from agy_mcp.models import (
     BackendName,
@@ -87,6 +88,7 @@ _store: SessionStore | None = None
 _supervisor: Supervisor | None = None
 _subscription_store: SubscriptionStore | None = None
 _webhook_dispatcher: WebhookDispatcher | None = None
+_orchestrator: Orchestrator | None = None
 _events_initialized: bool = False
 # Cached adapters for the doctor probe so we don't pay 4 subprocess calls
 # (one help + one version per backend) on every ``agy_doctor`` invocation.
@@ -145,7 +147,7 @@ _PURGE_MAX_DAYS = 365 * 10
 
 
 def _ensure_state() -> tuple[Config, SafetyPolicy, SessionStore, Supervisor]:
-    global _config, _safety, _store, _supervisor, _subscription_store, _webhook_dispatcher, _events_initialized
+    global _config, _safety, _store, _supervisor, _subscription_store, _webhook_dispatcher, _events_initialized, _orchestrator
     with _state_lock:
         if _config is None:
             _config = get_config()
@@ -164,8 +166,11 @@ def _ensure_state() -> tuple[Config, SafetyPolicy, SessionStore, Supervisor]:
                 safety=_safety,
                 events_dispatcher=_webhook_dispatcher,
             )
+        if _orchestrator is None:
+            _orchestrator = Orchestrator(store=_store, supervisor=_supervisor)
+            _supervisor.orchestrator = _orchestrator
         if not _events_initialized:
-            setup_events_protocol(mcp, _subscription_store)
+            setup_events_protocol(mcp, _subscription_store, dispatcher=_webhook_dispatcher)
             _events_initialized = True
         return _config, _safety, _store, _supervisor
 
@@ -175,6 +180,12 @@ def _ensure_events_state() -> tuple[SubscriptionStore, WebhookDispatcher]:
     assert _subscription_store is not None
     assert _webhook_dispatcher is not None
     return _subscription_store, _webhook_dispatcher
+
+
+def _ensure_orchestrator_state() -> Orchestrator:
+    _ensure_state()
+    assert _orchestrator is not None
+    return _orchestrator
 
 
 def _ensure_adapters(*, force_refresh: bool = False) -> tuple[AgyPrintBackend, GeminiCliBackend]:
@@ -238,8 +249,11 @@ def _reset_state_for_tests() -> None:
     module-level globals — keep it that way (Phase 5 R2 P3.7).
     """
 
-    global _config, _safety, _store, _supervisor, _agy_adapter, _gemini_adapter, _subscription_store, _webhook_dispatcher, _events_initialized
+    global _config, _safety, _store, _supervisor, _agy_adapter, _gemini_adapter, _subscription_store, _webhook_dispatcher, _events_initialized, _orchestrator
     with _state_lock:
+        if _orchestrator is not None:
+            _orchestrator.stop_worker()
+            _orchestrator = None
         _config = None
         _safety = None
         _store = None
@@ -1265,6 +1279,53 @@ def agy_result_page_tool(
     }
 
 
+@mcp.tool()
+def agy_pipeline_start(
+    name: str,
+    steps: list[dict[str, Any]],
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Start an autonomous sequential pipeline of Antigravity tasks (Codex step chaining)."""
+    orch = _ensure_orchestrator_state()
+    try:
+        pipe = orch.create_pipeline(name=name, steps=steps, session_id=session_id)
+        return {
+            "success": True,
+            "pipeline_id": pipe.pipeline_id,
+            "name": pipe.name,
+            "status": pipe.status,
+            "steps_count": len(pipe.steps),
+            "created_at": pipe.created_at,
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+@mcp.tool()
+def agy_pipeline_status(pipeline_id: str) -> dict[str, Any]:
+    """Check the status of an autonomous pipeline and its constituent steps."""
+    orch = _ensure_orchestrator_state()
+    pipe = orch.get_pipeline(pipeline_id)
+    if not pipe:
+        return {"success": False, "error": f"Pipeline not found: {pipeline_id}"}
+    return {
+        "success": True,
+        "pipeline": pipe.model_dump(mode="json"),
+    }
+
+
+@mcp.tool()
+def agy_pipeline_cancel(pipeline_id: str) -> dict[str, Any]:
+    """Cancel an active autonomous pipeline and any currently running job."""
+    orch = _ensure_orchestrator_state()
+    cancelled = orch.cancel_pipeline(pipeline_id)
+    return {
+        "success": cancelled,
+        "pipeline_id": pipeline_id,
+        "status": "cancelled" if cancelled else "not_found",
+    }
+
+
 def run(transport: str = "stdio", port: int = 8765) -> None:
     """Start the FastMCP stdio server."""
 
@@ -1287,6 +1348,9 @@ __all__ = [
     "agy_continue_tool",
     "agy_doctor_tool",
     "agy_install_skill_tool",
+    "agy_pipeline_cancel",
+    "agy_pipeline_start",
+    "agy_pipeline_status",
     "agy_purge_tool",
     "agy_read_tool",
     "agy_result_tool",
@@ -1297,4 +1361,5 @@ __all__ = [
     "mcp",
     "run",
     "_ensure_events_state",
+    "_ensure_orchestrator_state",
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from mcp.server.fastmcp import FastMCP
@@ -13,6 +13,7 @@ from agy_mcp.events import (
     JOB_CANCELLED_EVENT,
     JOB_COMPLETED_EVENT,
     JOB_FAILED_EVENT,
+    DiscoverRequest,
     EventDelivery,
     ListEventsRequest,
     StandardWebhooksSigner,
@@ -26,6 +27,8 @@ from agy_mcp.events import (
 )
 from agy_mcp.models import JobRecord
 
+VALID_SECRET = "whsec_MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
+
 
 def test_subscription_store_crud_and_persistence(tmp_path: Path):
     store_file = tmp_path / "subscriptions.json"
@@ -34,19 +37,21 @@ def test_subscription_store_crud_and_persistence(tmp_path: Path):
     delivery = EventDelivery(
         mode="webhook",
         url="https://webhook.example.com/events",
-        secret="whsec_dGVzdHNlY3JldDEyMzQ1Njc4OTA=",
+        secret=VALID_SECRET,
     )
 
     sub1 = store.add(JOB_COMPLETED_EVENT, delivery, {"job_id": "job_123"})
     assert sub1.subscription_id.startswith("sub_")
+    assert sub1.id.startswith("sub_")
     assert sub1.name == JOB_COMPLETED_EVENT
     assert sub1.arguments == {"job_id": "job_123"}
+    assert sub1.refresh_before is not None
 
     # Test persistence by reloading
     reloaded_store = SubscriptionStore(store_file)
     fetched = reloaded_store.get(sub1.subscription_id)
     assert fetched is not None
-    assert fetched.subscription_id == sub1.subscription_id
+    assert fetched.id == sub1.id
     assert fetched.delivery.url == "https://webhook.example.com/events"
 
     # Matching logic
@@ -64,7 +69,7 @@ def test_standard_webhooks_signer():
     secret = "whsec_MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE"
     webhook_id = "msg_20261014abcdef"
     timestamp = 1791950000
-    payload = b'{"event":"job.completed","data":{"job_id":"job_test"}}'
+    payload = b'{"eventId":"evt_1","name":"job.completed","data":{"job_id":"job_test"}}'
 
     sig = StandardWebhooksSigner.sign(webhook_id, timestamp, payload, secret)
     assert sig.startswith("v1,")
@@ -74,7 +79,7 @@ def test_standard_webhooks_signer():
 
     # Tampered payload
     assert not StandardWebhooksSigner.verify(
-        webhook_id, timestamp, b'{"event":"job.tampered"}', secret, sig
+        webhook_id, timestamp, b'{"eventId":"evt_tampered"}', secret, sig
     )
 
     # Tampered timestamp
@@ -94,7 +99,7 @@ async def test_webhook_dispatcher_dedup_and_dispatch(tmp_path: Path):
     delivery = EventDelivery(
         mode="webhook",
         url="https://api.openai.com/v1/webhook_test",
-        secret="whsec_dGVzdA==",
+        secret=VALID_SECRET,
     )
     sub = store.add(JOB_COMPLETED_EVENT, delivery)
 
@@ -102,7 +107,7 @@ async def test_webhook_dispatcher_dedup_and_dispatch(tmp_path: Path):
 
     delivered_calls = []
 
-    async def mock_deliver(s, ev, d):
+    async def mock_deliver(s, ev, d, **kwargs):
         delivered_calls.append((s.subscription_id, ev, d["job_id"]))
         return True
 
@@ -139,36 +144,51 @@ async def test_setup_events_protocol_handlers(tmp_path: Path):
     from mcp.server.lowlevel.server import NotificationOptions
 
     caps = mcp._mcp_server.get_capabilities(NotificationOptions(), {})
-    assert getattr(caps, "events", None) == {"subscribe": True, "listChanged": True}
+    assert getattr(caps, "events", None) == {}
+
+    # Verify server/discover handler
+    discover_handler = mcp._mcp_server.request_handlers[DiscoverRequest]
+    disc_res = await discover_handler(DiscoverRequest())
+    assert disc_res.root.resultType == "complete"
+    assert "2026-07-28" in disc_res.root.supportedVersions
+    assert "events" in disc_res.root.capabilities
 
     # Verify events/list handler
     list_handler = mcp._mcp_server.request_handlers[ListEventsRequest]
     list_res = await list_handler(ListEventsRequest())
     assert hasattr(list_res.root, "events")
     assert len(list_res.root.events) == 3
-    event_names = {e["name"] for e in list_res.root.events}
-    assert event_names == {JOB_COMPLETED_EVENT, JOB_FAILED_EVENT, JOB_CANCELLED_EVENT}
+    for ev in list_res.root.events:
+        assert ev["delivery"] == ["webhook"]
+        assert "inputSchema" in ev
+        assert "payloadSchema" in ev
 
-    # Verify events/subscribe handler
+    # Verify events/subscribe handler with mocked callback verification
     sub_handler = mcp._mcp_server.request_handlers[SubscribeEventRequest]
     sub_req = SubscribeEventRequest(
         params=SubscribeEventParams(
             name=JOB_COMPLETED_EVENT,
-            delivery={"mode": "webhook", "url": "https://example.com/hook", "secret": "whsec_abc123"},
+            delivery={"mode": "webhook", "url": "https://example.com/hook", "secret": VALID_SECRET},
         )
     )
-    sub_res = await sub_handler(sub_req)
-    sub_id = getattr(sub_res.root, "subscription_id", None)
-    assert sub_id is not None
-    assert sub_id.startswith("sub_")
+
+    with patch("agy_mcp.events.verify_callback_endpoint", new_callable=AsyncMock) as mock_verify:
+        sub_res = await sub_handler(sub_req)
+        assert mock_verify.called
+        sub_id = getattr(sub_res.root, "id", None)
+        assert sub_id is not None
+        assert sub_id.startswith("sub_")
+        assert sub_res.root.refreshBefore is not None
+        assert sub_res.root.cursor is None
+        assert sub_res.root.truncated is False
 
     # Verify events/unsubscribe handler
     unsub_handler = mcp._mcp_server.request_handlers[UnsubscribeEventRequest]
     unsub_req = UnsubscribeEventRequest(
-        params=UnsubscribeEventParams(subscriptionId=sub_id)
+        params=UnsubscribeEventParams(id=sub_id)
     )
     unsub_res = await unsub_handler(unsub_req)
-    assert getattr(unsub_res.root, "success", None) is True
+    assert unsub_res.root.model_dump(exclude_none=True) == {}
     assert store.get(sub_id) is None
 
 
@@ -178,14 +198,14 @@ async def test_webhook_dispatch_timeout_and_no_final_response(tmp_path: Path):
     delivery = EventDelivery(
         mode="webhook",
         url="https://api.openai.com/v1/webhook_test",
-        secret="whsec_dGVzdHNlY3JldDEyMzQ1Njc4OTA=",
+        secret=VALID_SECRET,
     )
     _ = store.add(JOB_FAILED_EVENT, delivery)
     dispatcher = WebhookDispatcher(store)
 
     delivered = []
 
-    async def mock_deliver(s, ev, d):
+    async def mock_deliver(s, ev, d, **kwargs):
         delivered.append((s.subscription_id, ev, d))
         return True
 

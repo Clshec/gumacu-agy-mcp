@@ -165,6 +165,7 @@ class Supervisor:
         adapter_factory: AdapterFactory | None = None,
         max_concurrent_jobs: int = 8,
         events_dispatcher: Any | None = None,
+        orchestrator: Any | None = None,
     ) -> None:
         self.store = store
         self.config = config or get_config()
@@ -173,6 +174,7 @@ class Supervisor:
         # supervisor and the synchronous path stay in lockstep.
         self._adapter_factory = adapter_factory or self._default_adapter_factory
         self._events_dispatcher = events_dispatcher
+        self._orchestrator = orchestrator
         self._jobs: dict[str, _JobHandle] = {}
         self._starting_jobs: set[str] = set()
         self._lock = threading.RLock()
@@ -185,6 +187,14 @@ class Supervisor:
             raise ValueError("max_concurrent_jobs must be positive")
         self._job_slots = threading.Semaphore(max_concurrent_jobs)
         self._max_concurrent_jobs = max_concurrent_jobs
+
+    @property
+    def orchestrator(self) -> Any | None:
+        return self._orchestrator
+
+    @orchestrator.setter
+    def orchestrator(self, val: Any) -> None:
+        self._orchestrator = val
 
     def _response_cwd(self, cwd: str | Path) -> str:
         """Return a redacted cwd safe for public records and envelopes."""
@@ -551,6 +561,11 @@ class Supervisor:
                     self._events_dispatcher.dispatch_job_event(finalised)
                 except Exception:
                     pass
+            if self._orchestrator is not None:
+                try:
+                    self._orchestrator.wake()
+                except Exception:
+                    pass
             return self._public_record(finalised or fresh)
 
     def read_events(self, job_id: str, *, since: int = 0) -> list[CanonicalEvent]:
@@ -874,6 +889,12 @@ class Supervisor:
                 )
             except Exception as ex:
                 logger.warning("Error dispatching job event: %s", ex)
+
+        if self._orchestrator is not None:
+            try:
+                self._orchestrator.wake()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
