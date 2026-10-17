@@ -257,7 +257,6 @@ class TelegramBot:
 
     def on_job_event(self, record: JobRecord, event: CanonicalEvent) -> None:
         record = self._inherit_conversation_title(record)
-        record = refresh_title(self.store, record)
         subtype = event.subtype or event.type
         if subtype not in MEANINGFUL and event.type not in {"tool_use", "error"}:
             return
@@ -273,29 +272,52 @@ class TelegramBot:
         self.send(self._format_record(record, progress=progress, heading="🔄 تحديث مهمة Antigravity"), buttons=self._job_buttons(record))
 
     def _inherit_conversation_title(self, record: JobRecord) -> JobRecord:
-        """Keep one human title for every turn in the same conversation."""
+        """Pin the first session title, including ChatGPT-initiated follow-ups."""
 
-        if record.antigravity_title or not record.session_id:
-            return record
-        titles = self._state.get("conversation_titles", {})
-        title = titles.get(record.session_id) if isinstance(titles, dict) else None
+        if not record.session_id:
+            return refresh_title(self.store, record)
+
+        titles = self._state.setdefault("conversation_titles", {})
+        if not isinstance(titles, dict):
+            titles = {}
+            self._state["conversation_titles"] = titles
+
+        title = titles.get(record.session_id)
         if not isinstance(title, str) or not title.strip():
-            for previous in self.store.list_jobs(limit=100):
-                if previous.job_id != record.job_id and previous.session_id == record.session_id:
-                    title = previous.antigravity_title
-                    if title:
-                        break
-        if isinstance(title, str) and title.strip():
-            record.antigravity_title = title.strip()[:120]
+            # If the state file lacks this title (e.g. a restart), use the
+            # oldest available turn, never the latest follow-up prompt.
+            previous_jobs = self.store.list_jobs(limit=100)
+            title = next(
+                (
+                    previous.antigravity_title
+                    for previous in reversed(previous_jobs)
+                    if previous.job_id != record.job_id
+                    and previous.session_id == record.session_id
+                    and previous.antigravity_title
+                ),
+                None,
+            )
+            if not title:
+                record = refresh_title(self.store, record)
+                title = record.antigravity_title
+            if isinstance(title, str) and title.strip():
+                title = title.strip()[:120]
+                titles[record.session_id] = title
+                self._save_state()
+
+        if isinstance(title, str) and title.strip() and record.antigravity_title != title:
+            record.antigravity_title = title
             record.title_source = "antigravity_task"
             self.store.update_job(record)
         return record
 
     def _remember_conversation_title(self, record: JobRecord) -> None:
+        """Later turns must not replace the original session title."""
+
         if not record.session_id or not record.antigravity_title:
             return
         titles = self._state.setdefault("conversation_titles", {})
-        if isinstance(titles, dict) and titles.get(record.session_id) != record.antigravity_title:
+        if isinstance(titles, dict) and not titles.get(record.session_id):
             titles[record.session_id] = record.antigravity_title
             self._save_state()
 
@@ -319,7 +341,6 @@ class TelegramBot:
             if record.status != "running" or not self.is_telegram_job(record):
                 continue
             record = self._inherit_conversation_title(record)
-            record = refresh_title(self.store, record)
             self._remember_conversation_title(record)
             key = f"progress:{record.job_id}"
             previous = self._state.get(key, {})
@@ -342,7 +363,6 @@ class TelegramBot:
 
     def terminal_message(self, record: JobRecord, summary: str) -> str:
         record = self._inherit_conversation_title(record)
-        record = refresh_title(self.store, record)
         self._remember_conversation_title(record)
         progress, _ = safe_progress(self.store.read_events(record.job_id))
         heading = "✅ اكتملت مهمة Antigravity" if record.status == "completed" else "⛔ انتهت الحصة" if record.status == "quota_exhausted" else "⚠️ انتهت مهمة Antigravity"
@@ -350,7 +370,6 @@ class TelegramBot:
 
     def conversation_reply(self, record: JobRecord, reply: str) -> str:
         record = self._inherit_conversation_title(record)
-        record = refresh_title(self.store, record)
         self._remember_conversation_title(record)
         safe = self.safety.redact(reply)
         return (
@@ -610,7 +629,6 @@ class TelegramBot:
         refreshed = []
         for record in records:
             record = self._inherit_conversation_title(record)
-            record = refresh_title(self.store, record)
             self._remember_conversation_title(record)
             refreshed.append(record)
         return refreshed
