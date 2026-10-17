@@ -98,6 +98,7 @@ class ProtocolTranslator:
             error_subtypes = {
                 "error",
                 "upstream_error",
+                "quota_exhausted",
                 "wrapper_timeout",
                 "error_during_execution",
             }

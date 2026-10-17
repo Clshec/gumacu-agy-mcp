@@ -22,6 +22,7 @@ JobStatus = Literal[
     "cancelled",
     "unknown",
     "upstream_error",
+    "quota_exhausted",
     "timeout",
     "no_final_response",
 ]
@@ -460,6 +461,7 @@ class StatusToolResponse(_DictLikeEnvelope):
     success: bool
     error: str | None = None
     record: JobRecord | None = None
+    progress: dict[str, Any] | None = None
 
 
 class ReadToolResponse(_DictLikeEnvelope):

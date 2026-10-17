@@ -518,10 +518,19 @@ def _run_unsafe(
             f"{original_len} to {len(assistant_text)} chars by max_output_chars"
         )
     has_timeout = getattr(result, "had_timeout", False)
+    has_quota_exhausted = getattr(result, "quota_exhausted", False)
     has_upstream = result.had_upstream_error
     has_content = bool(assistant_text.strip())
 
-    if has_upstream:
+    if has_quota_exhausted:
+        status = "quota_exhausted"
+        success = False
+        error_field = (
+            getattr(result, "quota_error_text", None)
+            or _pick_error_text(result.events)
+            or "Antigravity quota exhausted"
+        )
+    elif has_upstream:
         status = "upstream_error"
         success = False
         error_field = result.upstream_error_text or _pick_error_text(result.events) or "upstream error"

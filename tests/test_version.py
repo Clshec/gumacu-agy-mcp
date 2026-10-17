@@ -68,4 +68,4 @@ def test_announced_mcp_version_matches_package_version():
     assert mcp._mcp_server.version == __version__
     init_options = mcp._mcp_server.create_initialization_options()
     assert init_options.server_version == __version__
-    assert init_options.server_version == "0.1.11"
+    assert init_options.server_version == "0.1.13"

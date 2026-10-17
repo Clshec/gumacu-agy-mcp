@@ -434,6 +434,7 @@ class Orchestrator:
                     "failed",
                     "cancelled",
                     "upstream_error",
+                    "quota_exhausted",
                     "timeout",
                     "no_final_response",
                 }:

@@ -53,7 +53,6 @@ from agy_mcp.events import (
     WebhookDispatcher,
     setup_events_protocol,
 )
-from agy_mcp.orchestrator import Orchestrator
 from agy_mcp.install import SkillScope, SkillTarget, install_skills
 from agy_mcp.models import (
     BackendName,
@@ -70,6 +69,7 @@ from agy_mcp.models import (
     SessionsToolResponse,
     StatusToolResponse,
 )
+from agy_mcp.orchestrator import Orchestrator
 from agy_mcp.remote_policy import restrict_request, restrict_tools
 from agy_mcp.safety import SafetyPolicy
 from agy_mcp.session_store import SessionStore
@@ -107,7 +107,15 @@ _MAX_JOB_ID_LEN = 84
 _JOB_ID_PATTERN = re.compile(r"^job_[A-Za-z0-9_-]{1,80}$")
 _JOB_ID_REFERENCE_PATTERN = _JOB_ID_PATTERN
 _RESULT_JOB_STATUSES = frozenset(
-    {"completed", "failed", "cancelled", "upstream_error", "timeout", "no_final_response"}
+    {
+        "completed",
+        "failed",
+        "cancelled",
+        "upstream_error",
+        "quota_exhausted",
+        "timeout",
+        "no_final_response",
+    }
 )
 _MAX_SESSION_ID_LEN = 96
 # Conservative charset for SESSION_ID; mirrors models._SESSION_ID_RE so
@@ -737,8 +745,9 @@ def agy_start_tool(
 @mcp.tool(
     name="agy_status",
     description=(
-        "Return the JobRecord (status, exit code, error, timestamps) for a "
-        "job_id or unique job-id prefix."
+        "Return status plus a safe live progress summary for a job_id or "
+        "unique job-id prefix. While a job is running, use progress.summary "
+        "and progress.recent_activity to explain what Antigravity is doing."
     ),
 )
 def agy_status_tool(job_id: str) -> StatusToolResponse:
@@ -759,7 +768,95 @@ def agy_status_tool(job_id: str) -> StatusToolResponse:
             ValueError(f"job_id {resolved_job_id or job_id!r} not found"),
             StatusToolResponse,
         )
-    return StatusToolResponse(success=True, record=record)
+    try:
+        events = supervisor.read_events(record.job_id)
+    except Exception:  # noqa: BLE001 - status must remain available if the log is damaged
+        events = []
+    return StatusToolResponse(
+        success=True,
+        record=record,
+        progress=_build_progress_summary(record, events, safety),
+    )
+
+
+_PROGRESS_LABELS = {
+    "init": "Preparing the Antigravity runtime",
+    "sidecar_ready": "Antigravity runtime is ready",
+    "sidecar_http_ready": "Antigravity connection is ready",
+    "conversation_started": "Started the Antigravity conversation",
+    "conversation_resumed": "Resumed the Antigravity conversation",
+    "print_starting": "Sending the task to Antigravity",
+    "turn_start": "Antigravity is working on the requested task",
+    "input_flush": "The task input was delivered",
+    "stream_start": "Receiving Antigravity output",
+    "turn_end": "Antigravity finished the current turn",
+    "rewind": "Antigravity retried an earlier step",
+    "quota_exhausted": "Antigravity quota is exhausted",
+    "timeout": "Antigravity timed out",
+    "success": "Antigravity completed the task",
+    "cancelled": "The Antigravity task was cancelled",
+}
+
+
+def _build_progress_summary(
+    record: Any,
+    events: list[Any],
+    safety: SafetyPolicy,
+) -> dict[str, Any]:
+    """Build a bounded, redacted operational view without exposing raw logs."""
+    prompt = ""
+    if isinstance(record.request, dict):
+        prompt = str(record.request.get("prompt") or record.request.get("PROMPT") or "")
+    task_preview = safety.redact(" ".join(prompt.split()))[:240] or None
+
+    activity: list[dict[str, Any]] = []
+    for event in events:
+        subtype = event.subtype or event.type
+        label = _PROGRESS_LABELS.get(subtype)
+        if event.type == "tool_use":
+            label = f"Using tool: {subtype}"
+        elif event.type == "tool_result":
+            label = f"Received output from: {subtype}"
+        elif event.type == "error" and not label:
+            label = f"Antigravity reported an error: {subtype}"
+        elif event.type == "assistant" and event.text:
+            label = "Antigravity produced an output update"
+        if not label:
+            continue
+        item: dict[str, Any] = {
+            "at": event.ts,
+            "type": event.type,
+            "subtype": event.subtype,
+            "description": label,
+        }
+        # Assistant text is already redacted by the adapter. Include only a
+        # short output preview; never copy raw klog metadata or model thoughts.
+        if event.type == "assistant" and event.text:
+            item["output_preview"] = safety.redact(event.text)[:240]
+        activity.append(item)
+
+    recent = activity[-5:]
+    if record.status == "running":
+        latest = recent[-1]["description"] if recent else "Antigravity is running"
+        summary = latest
+        if task_preview:
+            summary = f"{latest}. Current task: {task_preview}"
+    elif record.status == "quota_exhausted":
+        summary = "Antigravity stopped because its quota is exhausted"
+    elif recent:
+        summary = recent[-1]["description"]
+    else:
+        summary = f"Antigravity job status: {record.status}"
+
+    return {
+        "summary": summary,
+        "phase": (recent[-1]["subtype"] or recent[-1]["type"]) if recent else record.status,
+        "task_preview": task_preview,
+        "last_event_at": record.last_event_at,
+        "event_count": len(events),
+        "recent_activity": recent,
+        "detail_level": "operational",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1246,7 +1343,14 @@ def agy_result_page_tool(
         return {"success": False, "error": "offset exceeds result length"}
     end = min(offset + limit, len(text))
 
-    if status in ("timeout", "failed", "cancelled", "upstream_error", "no_final_response"):
+    if status in (
+        "timeout",
+        "failed",
+        "cancelled",
+        "upstream_error",
+        "quota_exhausted",
+        "no_final_response",
+    ):
         err_msg = (getattr(record, "error", None) if record else None) or f"job ended with status '{status}'"
         return {
             "success": False,

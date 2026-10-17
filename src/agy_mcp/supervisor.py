@@ -773,6 +773,14 @@ class Supervisor:
                 status = "cancelled"
                 if not error:
                     error = "job cancelled by supervisor"
+            elif getattr(result, "quota_exhausted", False) or result_subtype == "quota_exhausted":
+                status = "quota_exhausted"
+                if not error:
+                    error = self.safety.redact(
+                        getattr(result, "quota_error_text", None)
+                        or _pick_error_from_events(result.events)
+                        or "Antigravity quota exhausted",
+                    )
             elif result.had_upstream_error or result_subtype == "upstream_error":
                 status = "upstream_error"
                 if not error:

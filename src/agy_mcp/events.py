@@ -99,11 +99,18 @@ PAYLOAD_SCHEMA_FAILED: dict[str, Any] = {
         "session_id": {"type": "string"},
         "status": {
             "type": "string",
-            "enum": ["failed", "upstream_error", "timeout", "no_final_response"],
+            "enum": [
+                "failed",
+                "upstream_error",
+                "quota_exhausted",
+                "timeout",
+                "no_final_response",
+            ],
         },
         "finished_at": {"type": "string"},
         "error": {"type": "string"},
         "exit_code": {"type": ["integer", "null"]},
+        "reason_code": {"type": "string"},
     },
     "required": ["job_id", "status", "error"],
 }
@@ -823,6 +830,7 @@ class WebhookDispatcher:
             "failed",
             "cancelled",
             "upstream_error",
+            "quota_exhausted",
             "timeout",
             "no_final_response",
         }:
@@ -858,6 +866,9 @@ class WebhookDispatcher:
                 "finished_at": finished_at,
                 "error": record.error or "Unknown failure",
                 "exit_code": record.exit_code,
+                "reason_code": (
+                    "quota_exhausted" if record.status == "quota_exhausted" else record.status
+                ),
             }
 
         event_id = f"evt_{secrets.token_hex(12)}"

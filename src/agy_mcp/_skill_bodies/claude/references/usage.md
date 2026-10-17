@@ -49,7 +49,11 @@ job_id = start["job_id"]
 # Poll status until completion:
 while True:
     st = agy_status(job_id)
-    if st["record"]["status"] in {"completed", "failed", "cancelled", "upstream_error"}:
+    # While running, report st.progress.summary and recent_activity to the user.
+    if st["record"]["status"] in {
+        "completed", "failed", "cancelled", "upstream_error",
+        "quota_exhausted", "timeout", "no_final_response",
+    }:
         break
 
 # Fetch the human-readable final output:

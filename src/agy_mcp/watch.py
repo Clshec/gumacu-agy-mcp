@@ -165,7 +165,15 @@ def watch_job(
                     print(line, flush=True)
             cursor += len(new_events)
 
-        if record.status in {"completed", "failed", "cancelled", "upstream_error"}:
+        if record.status in {
+            "completed",
+            "failed",
+            "cancelled",
+            "upstream_error",
+            "quota_exhausted",
+            "timeout",
+            "no_final_response",
+        }:
             break
 
         if record.status != last_status:
@@ -222,6 +230,8 @@ def watch_job(
         status_msg = "انتهت مهلة التنفيذ (Timeout) قبل اكتمال المهمة بالكامل."
     elif record.status == "no_final_response":
         status_msg = "انتهت العملية دون إصدار رد نهائي."
+    elif record.status == "quota_exhausted":
+        status_msg = "توقفت المهمة لأن كوتا Antigravity انتهت."
     else:
         status_msg = f"انتهت العملية بالحالة: {record.status}."
 

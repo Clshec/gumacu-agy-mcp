@@ -6,6 +6,17 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Detect Antigravity quota exhaustion across gRPC `RESOURCE_EXHAUSTED`, quota,
+  usage-limit, rate-limit, credit, and capacity messages; finalize the job as
+  `quota_exhausted` and deliver a signed `job.failed` event with the stable
+  `reason_code=quota_exhausted` so ChatGPT is notified even when no final
+  assistant response is produced.
+- Enrich `agy_status` with a bounded, redacted `progress` summary containing
+  the current operational phase, task preview, last event time, event count,
+  and recent activity so clients can explain a running job meaningfully.
+
 ### Fixed
 
 - Repair local Codex pipeline execution by calling the Supervisor's supported

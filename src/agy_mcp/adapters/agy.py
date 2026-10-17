@@ -126,15 +126,42 @@ _RE_AGENT_EXECUTOR_ERROR = re.compile(r"agent executor error: (.+)")
 _RE_FAILED_PRECONDITION = re.compile(r"FAILED_PRECONDITION \(code \d+\): (.+)")
 _RE_PERMISSION_DENIED = re.compile(r"PERMISSION_DENIED \(code \d+\): (.+)")
 _RE_UNAUTHENTICATED = re.compile(r"UNAUTHENTICATED \(code \d+\): (.+)")
-_RE_RESOURCE_EXHAUSTED = re.compile(r"RESOURCE_EXHAUSTED \(code \d+\): (.+)")
+_RE_RESOURCE_EXHAUSTED = re.compile(
+    r"RESOURCE_EXHAUSTED(?:\s*\(code\s+\d+\))?\s*:\s*(.+)", re.IGNORECASE
+)
+_RE_QUOTA_EXHAUSTED = re.compile(
+    r"(?:quota|usage\s+limit|rate\s+limit|request\s+limit|credits?)"
+    r".{0,120}(?:exhausted|exceeded|reached|depleted|used\s+up|no\s+remaining)"
+    r"|(?:exhausted|exceeded|reached|depleted)"
+    r".{0,120}(?:quota|usage\s+limit|rate\s+limit|request\s+limit|credits?)",
+    re.IGNORECASE,
+)
+_RE_CAPACITY_EXHAUSTED = re.compile(
+    r"(?:no\s+(?:remaining\s+)?(?:model\s+)?capacity|capacity\s+(?:is\s+)?exhausted)",
+    re.IGNORECASE,
+)
+
+_QUOTA_ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    _RE_RESOURCE_EXHAUSTED,
+    _RE_QUOTA_EXHAUSTED,
+    _RE_CAPACITY_EXHAUSTED,
+)
 
 _UPSTREAM_ERROR_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (_RE_AGENT_EXECUTOR_ERROR, "agent_executor_error"),
     (_RE_FAILED_PRECONDITION, "failed_precondition"),
     (_RE_PERMISSION_DENIED, "permission_denied"),
     (_RE_UNAUTHENTICATED, "unauthenticated"),
-    (_RE_RESOURCE_EXHAUSTED, "resource_exhausted"),
 )
+
+
+def _quota_error_from_text(text: str) -> str | None:
+    """Return a bounded quota failure message when upstream leaves evidence."""
+
+    for pattern in _QUOTA_ERROR_PATTERNS:
+        if match := pattern.search(text):
+            return next((group for group in match.groups() if group), match.group(0))
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -529,6 +556,14 @@ class AgyPrintBackend(BaseAdapter):
                 stdout_text = recovered
                 recovered_from_transcript = True
 
+        # Some agy releases print quota failures to stderr/stdout without
+        # writing the same line to klog. Classify that evidence before deciding
+        # whether an empty exit-0 run is merely ``no_final_response``.
+        if not ctx.quota_exhausted:
+            quota_text = _quota_error_from_text(f"{stderr_text}\n{stdout_text}")
+            if quota_text:
+                _mark_quota_exhausted(self, ctx, quota_text)
+
         if stdout_text.strip():
             self._emit(
                 ctx,
@@ -576,6 +611,9 @@ class AgyPrintBackend(BaseAdapter):
                 error_text = ctx.first_timeout_text or (
                     f"agy did not finish within {request.timeout}s"
                 )
+            elif ctx.quota_exhausted:
+                subtype = "quota_exhausted"
+                error_text = ctx.first_quota_error or "Antigravity quota exhausted"
             elif ctx.had_upstream_error:
                 subtype = "upstream_error"
                 error_text = ctx.first_upstream_error or "upstream error"
@@ -618,6 +656,8 @@ class AgyPrintBackend(BaseAdapter):
             artifacts=[],
             had_upstream_error=ctx.had_upstream_error,
             upstream_error_text=ctx.first_upstream_error,
+            quota_exhausted=ctx.quota_exhausted,
+            quota_error_text=ctx.first_quota_error,
             had_timeout=has_timeout,
             timeout_text=ctx.first_timeout_text or (f"agy did not finish within {request.timeout}s" if has_timeout else None),
         )
@@ -903,6 +943,11 @@ def _handle_klog_line(line: str, ctx: _RunContext, adapter: AgyPrintBackend) -> 
             ),
         )
         return
+    quota_error = _quota_error_from_text(msg)
+    if quota_error:
+        _mark_quota_exhausted(adapter, ctx, quota_error, raw_klog_line=safe_msg)
+        return
+
     # Upstream API errors that agy 1.0.0 swallows. Match after the more
     # specific lifecycle patterns so we never shadow a benign event, and
     # before falling through to the generic klog event so the structured
@@ -926,6 +971,41 @@ def _handle_klog_line(line: str, ctx: _RunContext, adapter: AgyPrintBackend) -> 
                 ),
             )
             return
+
+
+def _mark_quota_exhausted(
+    adapter: AgyPrintBackend,
+    ctx: _RunContext,
+    message: str,
+    *,
+    raw_klog_line: str | None = None,
+) -> None:
+    detail = adapter.safety.redact(message).strip()[:1000]
+    error_text = f"Antigravity quota exhausted: {detail}" if detail else (
+        "Antigravity quota exhausted"
+    )
+    with ctx.lock:
+        if ctx.quota_exhausted:
+            return
+        ctx.quota_exhausted = True
+        ctx.first_quota_error = error_text
+        # Keep the legacy upstream flag for older consumers while exposing the
+        # specific quota fields to v0.1.13+ clients.
+        ctx.had_upstream_error = True
+        if not ctx.first_upstream_error:
+            ctx.first_upstream_error = error_text
+    metadata = {"reason_code": "quota_exhausted"}
+    if raw_klog_line is not None:
+        metadata["raw_klog_line"] = raw_klog_line
+    adapter._emit(
+        ctx,
+        CanonicalEvent(
+            type="error",
+            subtype="quota_exhausted",
+            text=error_text,
+            metadata=metadata,
+        ),
+    )
 
 
 def _tail_transcripts(ctx: _RunContext, adapter: AgyPrintBackend, started_at: float) -> None:
