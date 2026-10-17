@@ -523,6 +523,7 @@ class SessionsToolResponse(_DictLikeEnvelope):
     error: str | None = None
     count: int = 0
     records: list[JobRecord] = Field(default_factory=list)
+    integration: dict[str, Any] = Field(default_factory=dict)
 
 
 class NotificationsToolResponse(_DictLikeEnvelope):
