@@ -103,6 +103,7 @@ exclude = [
 # audit trail. Phase 8 R2: this list IS the release contract.
 include = [
     "src/agy_mcp",
+    "docs/multi-device.md",
     "docs/architecture.md",
     "docs/cli-capabilities.md",
     "docs/comparison-with-cli-wrappers.md",

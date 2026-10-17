@@ -16,12 +16,14 @@ from agy_mcp.device_gateway import Broker, make_handler, token_hash
 
 @pytest.fixture
 def broker(tmp_path: Path) -> Broker:
-    return Broker(tmp_path / "broker.db", {
+    instance = Broker(tmp_path / "broker.db", {
         "windows-main": {"os": "Windows", "token_sha256": token_hash("w" * 40),
                          "allowed_actions": ["start", "status", "cancel"]},
         "netcup-main": {"os": "Linux", "token_sha256": token_hash("l" * 40),
                         "allowed_actions": ["start", "status"]},
     })
+    yield instance
+    instance.conn.close()
 
 
 def test_devices_heartbeat_and_offline(broker: Broker) -> None:
@@ -85,6 +87,7 @@ def test_persistence(tmp_path: Path) -> None:
     second = Broker(db, devices)
     assert second.get(ident)["state"] == "done"
     assert second.poll("windows-main") is None
+    second.conn.close()
 
 
 def test_agent_completion_cache(tmp_path: Path) -> None:
@@ -99,6 +102,7 @@ def test_agent_completion_cache(tmp_path: Path) -> None:
     assert resumed.pending_receipts()[0][1] == "test-proof"
     resumed.mark_sent("call_" + "a" * 32)
     assert resumed.pending_receipts() == []
+    resumed.conn.close()
     with pytest.raises(ValueError, match="unsupported action"):
         dispatch("shell", {"command": "rm -rf /"}, "call_" + "a" * 32)
 
