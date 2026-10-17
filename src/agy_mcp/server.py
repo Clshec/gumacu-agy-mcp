@@ -47,6 +47,7 @@ from agy_mcp.adapters.gemini import GeminiCliBackend
 from agy_mcp.adapters.protocol import ProtocolTranslator
 from agy_mcp.bridge import _run as _bridge_run
 from agy_mcp.config import Config, get_config
+from agy_mcp.device_tools import register_device_tools
 from agy_mcp.doctor import run_doctor
 from agy_mcp.events import (
     SubscriptionStore,
@@ -1641,6 +1642,10 @@ def agy_pipeline_cancel(pipeline_id: str) -> dict[str, Any]:
         "pipeline_id": pipeline_id,
         "status": "cancelled" if cancelled else "not_found",
     }
+
+
+# Optional Windows/Linux multi-device layer. Legacy agy_* tools remain local.
+register_device_tools(mcp)
 
 
 def run(transport: str = "stdio", port: int = 8765) -> None:

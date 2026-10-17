@@ -12,7 +12,13 @@ READ_TOOLS = frozenset({
     "agy_pipeline_status", "agy_notifications", "agy_notification_ack",
     "agy_active_jobs",
 })
-CONTROLLED_TOOLS = READ_TOOLS | {"agy_start", "agy_cancel", "agy_pipeline_start", "agy_pipeline_cancel"}
+DEVICE_TOOLS = frozenset({
+    "agy_devices", "agy_device_call", "agy_device_start",
+    "agy_device_continue", "agy_device_status", "agy_device_read",
+    "agy_device_result", "agy_device_cancel", "agy_device_sessions",
+    "agy_device_doctor",
+})
+CONTROLLED_TOOLS = READ_TOOLS | {"agy_start", "agy_cancel", "agy_pipeline_start", "agy_pipeline_cancel"} | DEVICE_TOOLS
 OPERATOR_TOOLS = CONTROLLED_TOOLS | {"agy", "agy_continue", "agy_result", "agy_doctor"}
 VALID_PROFILES = frozenset({"local", "read-only", "controlled", "controlled-write", "operator"})
 
