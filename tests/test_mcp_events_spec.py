@@ -10,10 +10,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
-import mcp.types as mcp_types
-from mcp.shared.exceptions import McpError
 import pytest
 from mcp.server.fastmcp import FastMCP
+from mcp.shared.exceptions import McpError
 
 from agy_mcp.events import (
     CALLBACK_ENDPOINT_ERROR,
@@ -23,9 +22,7 @@ from agy_mcp.events import (
     DiscoverRequest,
     EventDelivery,
     EventOutbox,
-    EventSubscription,
     ListEventsRequest,
-    StandardWebhooksSigner,
     SubscribeEventParams,
     SubscribeEventRequest,
     SubscriptionStore,
@@ -81,7 +78,7 @@ async def test_events_list_catalog_conforms_to_spec(tmp_path: Path):
     catalog_map = {e["name"]: e for e in events}
     assert set(catalog_map.keys()) == {JOB_COMPLETED_EVENT, JOB_FAILED_EVENT, JOB_CANCELLED_EVENT}
 
-    for name, item in catalog_map.items():
+    for item in catalog_map.values():
         assert item["delivery"] == ["webhook"]
         assert isinstance(item["description"], str)
         assert item["inputSchema"]["type"] == "object"
@@ -262,7 +259,7 @@ async def test_events_subscribe_idempotent_and_deterministic(tmp_path: Path):
         )
     )
 
-    with patch("agy_mcp.events.verify_callback_endpoint", new_callable=AsyncMock) as mock_verify:
+    with patch("agy_mcp.events.verify_callback_endpoint", new_callable=AsyncMock):
         res1 = await sub_handler(req)
         res2 = await sub_handler(req)
 
