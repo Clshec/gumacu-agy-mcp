@@ -402,6 +402,15 @@ def test_release_cli_preserves_required_skills_when_source_and_artifact_are_miss
     script.parent.mkdir(parents=True)
     shutil.copyfile(_SCRIPT, script)
     package_members = (
+        "agy_mcp/antigravity_metadata.py",
+        "agy_mcp/device_agent.py",
+        "agy_mcp/device_gateway.py",
+        "agy_mcp/device_tools.py",
+        "agy_mcp/events.py",
+        "agy_mcp/notifications.py",
+        "agy_mcp/orchestrator.py",
+        "agy_mcp/remote_policy.py",
+        "agy_mcp/telegram_bot.py",
         "agy_mcp/__init__.py",
         "agy_mcp/__main__.py",
         "agy_mcp/server.py",
@@ -441,6 +450,7 @@ def test_release_cli_preserves_required_skills_when_source_and_artifact_are_miss
         "README.md",
         "CHANGELOG.md",
         "pyproject.toml",
+        "docs/multi-device.md",
         "docs/architecture.md",
         "docs/cli-capabilities.md",
         "docs/comparison-with-cli-wrappers.md",
