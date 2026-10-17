@@ -286,11 +286,15 @@ class TelegramBot:
         if not isinstance(title, str) or not title.strip():
             # If the state file lacks this title (e.g. a restart), use the
             # oldest available turn, never the latest follow-up prompt.
-            previous_jobs = self.store.list_jobs(limit=100)
+            # SessionStore lists by mutable directory mtime; sort by the
+            # immutable start time to pick the first turn even if an older
+            # job was updated after a newer one.
+            previous_jobs = list(reversed(self.store.list_jobs(limit=100)))
+            previous_jobs.sort(key=lambda previous: previous.started_at)
             title = next(
                 (
                     previous.antigravity_title
-                    for previous in reversed(previous_jobs)
+                    for previous in previous_jobs
                     if previous.session_id == record.session_id
                     and previous.antigravity_title
                 ),
