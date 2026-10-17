@@ -1768,7 +1768,7 @@ def test_cancel_signals_running_job_without_metadata(tmp_path: Path):
 @pytest.mark.parametrize(
     "exit_code,run_error,event_error,expected_error",
     [
-        (1, None, None, "non-zero exit"),
+        (1, None, None, "non-zero exit (1)"),
         (1, RuntimeError("adapter finished with an exception"), None,
          "adapter finished with an exception"),
         (None, None, "wrapper timeout", "wrapper timeout"),
