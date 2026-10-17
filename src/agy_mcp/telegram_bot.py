@@ -291,8 +291,7 @@ class TelegramBot:
                 (
                     previous.antigravity_title
                     for previous in reversed(previous_jobs)
-                    if previous.job_id != record.job_id
-                    and previous.session_id == record.session_id
+                    if previous.session_id == record.session_id
                     and previous.antigravity_title
                 ),
                 None,
