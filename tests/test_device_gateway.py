@@ -45,8 +45,10 @@ def test_request_lifecycle_and_session_affinity(broker: Broker) -> None:
                   {"success": True, "SESSION_ID": "session-abc"})
     assert broker.get(ident)["result"]["SESSION_ID"] == "session-abc"
     assert broker.get(ident)["state"] == "done"
-    with pytest.raises(ValueError, match="leased"):
-        broker.finish("windows-main", ident, work["claim"], {})
+    broker.finish("windows-main", ident, work["claim"],
+                  {"success": True, "SESSION_ID": "session-abc"})
+    with pytest.raises(ValueError, match="completed result mismatch"):
+        broker.finish("windows-main", ident, work["claim"], {"success": False})
     with pytest.raises(ValueError, match="another device"):
         broker.submit("netcup-main", "start",
                       {"PROMPT": "bad", "SESSION_ID": "session-abc"})
@@ -91,6 +93,12 @@ def test_agent_completion_cache(tmp_path: Path) -> None:
     cache.conn.close()
     recovered = AgentCache(tmp_path / "agent.sqlite")
     assert recovered.get("call_" + "a" * 32)["job_id"] == "job_1"
+    recovered.queue_receipt("call_" + "a" * 32, "test-proof", {"success": True})
+    recovered.conn.close()
+    resumed = AgentCache(tmp_path / "agent.sqlite")
+    assert resumed.pending_receipts()[0][1] == "test-proof"
+    resumed.mark_sent("call_" + "a" * 32)
+    assert resumed.pending_receipts() == []
     with pytest.raises(ValueError, match="unsupported action"):
         dispatch("shell", {"command": "rm -rf /"}, "call_" + "a" * 32)
 

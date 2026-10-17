@@ -88,6 +88,8 @@ class AgentCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(path))
         self.conn.execute("CREATE TABLE IF NOT EXISTS completed (id TEXT PRIMARY KEY, result TEXT)")
+        self.conn.execute("CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY,"
+                          " claim TEXT NOT NULL, result TEXT NOT NULL)")
         self.conn.commit()
 
     def get(self, ident: str) -> dict[str, Any] | None:
@@ -98,6 +100,19 @@ class AgentCache:
         with self.conn:
             self.conn.execute("INSERT OR IGNORE INTO completed(id,result) VALUES(?,?)",
                               (ident, json.dumps(result, ensure_ascii=False)))
+
+    def queue_receipt(self, ident: str, claim: str, result: dict[str, Any]) -> None:
+        with self.conn:
+            self.conn.execute("INSERT OR IGNORE INTO receipts(id,claim,result) VALUES(?,?,?)",
+                              (ident, claim, json.dumps(result, ensure_ascii=False)))
+
+    def pending_receipts(self) -> list[tuple[str, str, dict[str, Any]]]:
+        rows = self.conn.execute("SELECT id,claim,result FROM receipts ORDER BY id").fetchall()
+        return [(rid, claim, json.loads(value)) for rid, claim, value in rows]
+
+    def mark_sent(self, ident: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM receipts WHERE id=?", (ident,))
 
 
 def run(device: str, token: str, gateway: str, cache_path: Path) -> None:
@@ -119,6 +134,12 @@ def run(device: str, token: str, gateway: str, cache_path: Path) -> None:
             post(gateway, token, "/v1/agent/heartbeat",
                  {"device_id": device, "capabilities": {"platform": platform.system(),
                   "agent": "agy-mcp", "profile": profile}})
+            # Retry cached completions after loss of SSH/network. The broker's
+            # idempotent finish endpoint allows acknowledgment retransmission.
+            for ident, proof, saved in cache.pending_receipts():
+                post(gateway, token, "/v1/agent/finish",
+                     {"device_id": device, "id": ident, "claim": proof, "result": saved})
+                cache.mark_sent(ident)
             answer = post(gateway, token, "/v1/agent/poll", {"device_id": device})
             work = answer.get("work")
             if work:
@@ -130,9 +151,11 @@ def run(device: str, token: str, gateway: str, cache_path: Path) -> None:
                         # Never include exception content that could contain credentials.
                         result = {"success": False, "error": type(exc).__name__}
                     cache.save(work["id"], result)
+                cache.queue_receipt(work["id"], work["claim"], result)
                 post(gateway, token, "/v1/agent/finish",
                      {"device_id": device, "id": work["id"],
                       "claim": work["claim"], "result": result})
+                cache.mark_sent(work["id"])
             delay = 1.0
             time.sleep(1 if work else 2)
         except (HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError, TypeError):

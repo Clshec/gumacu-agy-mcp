@@ -115,13 +115,19 @@ class Broker:
             raise ValueError("invalid completion envelope")
         with self.lock, self.conn:
             row = self.conn.execute("SELECT * FROM calls WHERE id=?", (ident,)).fetchone()
-            if row is None or row["device"] != device or row["state"] != "leased":
+            if row is None or row["device"] != device:
                 raise ValueError("job not leased to this device")
             if not hmac.compare_digest(str(row["claim"]), claim):
                 raise ValueError("invalid lease proof")
             value = json.dumps(result, ensure_ascii=False)
             if len(value.encode("utf-8")) > MAX_BODY:
                 raise ValueError("result too large")
+            if row["state"] == "done":
+                if row["result"] == value:
+                    return  # Network retry after a successful, durable acknowledgment.
+                raise ValueError("completed result mismatch")
+            if row["state"] != "leased":
+                raise ValueError("job not leased to this device")
             session = result.get("SESSION_ID")
             if not session and isinstance(result.get("record"), dict):
                 session = result["record"].get("session_id")
@@ -132,7 +138,7 @@ class Broker:
                     raise ValueError("session binding conflict")
                 self.conn.execute("INSERT OR IGNORE INTO affinity(session,device) VALUES(?,?)",
                                   (session, device))
-            self.conn.execute("UPDATE calls SET state='done',result=?,claim=NULL,updated=?"
+            self.conn.execute("UPDATE calls SET state='done',result=?,updated=?"
                               " WHERE id=?", (value, time.time(), ident))
 
     def get(self, ident: str) -> dict[str, Any]:
