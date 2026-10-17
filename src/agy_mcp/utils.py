@@ -433,8 +433,9 @@ def expand_user_path(value: str | os.PathLike[str]) -> Path:
 def ensure_directory(path: Path, mode: int = 0o755) -> Path:
     """Create ``path`` (and parents) idempotently with restrictive mode."""
 
+    existed = path.exists()
     path.mkdir(parents=True, exist_ok=True)
-    if not is_windows():
+    if not is_windows() and not existed:
         try:
             path.chmod(mode)
         except OSError:
