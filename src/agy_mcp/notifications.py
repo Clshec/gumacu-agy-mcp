@@ -125,6 +125,31 @@ class NotificationOutbox:
                 "has_more": next_cursor < len(pending),
             }
 
+    def list_telegram_undelivered(self, *, cursor: int = 0, limit: int = 20) -> dict[str, Any]:
+        """List Telegram deliveries independently of ChatGPT acknowledgement.
+
+        An acknowledgement only means that a notification was surfaced to the
+        caller; it must never prevent Telegram delivery after a restart.
+        """
+        if cursor < 0 or not 1 <= limit <= 100:
+            raise ValueError("cursor must be non-negative and limit must be between 1 and 100")
+        with self._lock:
+            undelivered = sorted(
+                (
+                    item for item in self._records.values()
+                    if not item.get("telegram", {}).get("delivered")
+                ),
+                key=lambda item: item["created_at"],
+            )
+            page = undelivered[cursor : cursor + limit]
+            next_cursor = cursor + len(page)
+            return {
+                "notifications": [dict(item) for item in page],
+                "count": len(page),
+                "next_cursor": next_cursor if next_cursor < len(undelivered) else None,
+                "has_more": next_cursor < len(undelivered),
+            }
+
     def acknowledge(self, notification_id: str) -> dict[str, Any] | None:
         with self._lock:
             item = self._records.get(notification_id)
@@ -242,7 +267,7 @@ class NotificationDispatcher:
 
         cursor = 0
         while True:
-            page = self.outbox.list_pending(cursor=cursor, limit=100)
+            page = self.outbox.list_telegram_undelivered(cursor=cursor, limit=100)
             for item in page["notifications"]:
                 if item.get("telegram", {}).get("delivered"):
                     continue
