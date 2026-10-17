@@ -9,6 +9,18 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolate_bridge_host_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep Netcup's live bridge configuration out of unit tests.
+
+    Tests that intentionally exercise a profile or feature may set its
+    variables with monkeypatch after this autouse fixture has run.
+    """
+    for key in tuple(os.environ):
+        if key.startswith(("GUMACU_", "AGY_MCP_")):
+            monkeypatch.delenv(key, raising=False)
+
+
 @pytest.fixture
 def tmp_session_root(tmp_path: Path) -> Path:
     """Isolated session-store root for tests that exercise the SessionStore."""
