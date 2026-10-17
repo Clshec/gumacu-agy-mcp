@@ -232,6 +232,16 @@ def test_tools_registered():
         "agy_pipeline_start",
         "agy_pipeline_status",
         "agy_pipeline_cancel",
+        "agy_devices",
+        "agy_device_call",
+        "agy_device_start",
+        "agy_device_continue",
+        "agy_device_status",
+        "agy_device_read",
+        "agy_device_result",
+        "agy_device_cancel",
+        "agy_device_sessions",
+        "agy_device_doctor",
     }
     assert expected == set(server.mcp._tool_manager._tools.keys())
 
