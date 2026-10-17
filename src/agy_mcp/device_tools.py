@@ -41,7 +41,7 @@ def gateway_call(path: str, payload: dict[str, Any] | None = None) -> dict[str, 
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         if data is not None and len(data) > MAX_BODY:
             return {"success": False, "error": "request too large"}
-        request = Request(url.rstrip("/") + path, data=data,
+        request = Request(f"{url.rstrip('/')}/{path.lstrip('/')}", data=data,
                           headers={"Authorization": "Bearer " + token,
                                    "Content-Type": "application/json"},
                           method="POST" if payload is not None else "GET")
