@@ -5,6 +5,6 @@ from importlib import metadata
 try:
     __version__ = metadata.version("agy-mcp")
 except metadata.PackageNotFoundError:  # editable / source checkout before install
-    __version__ = "0.1.13"
+    __version__ = "0.1.14"
 
 __all__ = ["__version__"]

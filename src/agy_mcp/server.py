@@ -286,8 +286,13 @@ try:
         version=__version__,
         instructions=(
             "Google Antigravity (agy) CLI bridge with long-task supervisor. "
-            "Use ``agy`` for one-shot prompts, ``agy_start`` + ``agy_status`` "
-            "+ ``agy_read`` / ``agy_result`` + ``agy_cancel`` for detached jobs, and "
+            "IMPORTANT: use ``agy_start`` for every task that may take more than a "
+            "few seconds, or whenever the user may wait, monitor, ask for progress, "
+            "or expect an automatic completion event. A synchronous ``agy`` call "
+            "occupies its request and cannot be inspected reliably while running. "
+            "Use ``agy_status`` to answer progress questions from its progress field, "
+            "then ``agy_result`` after completion. Use ``agy`` only for quick one-shot "
+            "prompts, and "
             "``agy_doctor`` to check the environment."
         ),
     )
@@ -296,8 +301,13 @@ except TypeError:
         name="agy-mcp",
         instructions=(
             "Google Antigravity (agy) CLI bridge with long-task supervisor. "
-            "Use ``agy`` for one-shot prompts, ``agy_start`` + ``agy_status`` "
-            "+ ``agy_read`` / ``agy_result`` + ``agy_cancel`` for detached jobs, and "
+            "IMPORTANT: use ``agy_start`` for every task that may take more than a "
+            "few seconds, or whenever the user may wait, monitor, ask for progress, "
+            "or expect an automatic completion event. A synchronous ``agy`` call "
+            "occupies its request and cannot be inspected reliably while running. "
+            "Use ``agy_status`` to answer progress questions from its progress field, "
+            "then ``agy_result`` after completion. Use ``agy`` only for quick one-shot "
+            "prompts, and "
             "``agy_doctor`` to check the environment."
         ),
     )
@@ -521,7 +531,10 @@ def _result_text_from_events(
     name="agy",
     description=(
         "Run agy --print synchronously and return the assistant text + "
-        "metadata. Compatible drop-in for the legacy `gemini` tool: same "
+        "metadata. Use only for quick one-shot prompts. If a task may take "
+        "more than a few seconds, or the user may ask for progress, use "
+        "agy_start instead; synchronous calls cannot be inspected reliably "
+        "while their request is occupied. Compatible with the legacy `gemini` tool: same "
         "PROMPT / cd / sandbox / SESSION_ID / return_all_messages / model "
         "fields, with new mode / timeout / allow_write / worktree / backend "
         "/ output_protocol options."
@@ -603,9 +616,9 @@ async def agy_tool(
 @mcp.tool(
     name="agy_continue",
     description=(
-        "Continue an existing agy session. Identical to `agy` except "
-        "SESSION_ID is required and the underlying adapter resumes the "
-        "Antigravity conversation."
+        "Continue an existing agy session synchronously for a quick prompt. "
+        "For monitored or potentially long continuation work, call agy_start "
+        "with SESSION_ID instead."
     ),
 )
 async def agy_continue_tool(
@@ -674,9 +687,11 @@ async def agy_continue_tool(
 @mcp.tool(
     name="agy_start",
     description=(
-        "Start an agy session in the background. Returns an envelope with "
-        "status='running' and a job_id you can poll via agy_status / "
-        "agy_read / agy_cancel."
+        "Start a monitorable Antigravity job in the background. REQUIRED for "
+        "tasks that may take more than a few seconds, when the user may ask "
+        "what is happening, or when an automatic completion/failure event is "
+        "expected. Returns status='running' and a job_id; use agy_status for a "
+        "safe live progress summary and agy_result after completion."
     ),
 )
 def agy_start_tool(

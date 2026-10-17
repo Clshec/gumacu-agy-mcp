@@ -35,6 +35,12 @@ Notable defaults:
 
 ## Long jobs (start / status / result / read / cancel)
 
+Always use `agy_start` when a task may take more than a few seconds, the user
+may ask what is happening, or completion/failure must resume the conversation.
+Do not use synchronous `agy` or `agy_continue` for those tasks: their request
+can remain occupied and prevent a concurrent progress query. To continue an
+existing session in a monitorable job, pass its `SESSION_ID` to `agy_start`.
+
 The CLI bridges to an MCP tool surface. The skill should prefer the MCP
 tools (`agy_start`, `agy_status`, `agy_result`, `agy_read`, `agy_cancel`,
 `agy_sessions`) over polling the CLI because the supervisor handles
