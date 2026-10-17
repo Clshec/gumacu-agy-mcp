@@ -2,20 +2,33 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
-from agy_mcp.models import JobRecord
-from agy_mcp.orchestrator import Orchestrator, PipelineExecution
+from agy_mcp.models import BridgeResponse, JobRecord
+from agy_mcp.orchestrator import Orchestrator
 from agy_mcp.session_store import SessionStore
+
+
+def _mock_supervisor() -> MagicMock:
+    """Use the real public surface so renamed methods fail tests immediately."""
+
+    return MagicMock(spec_set=["start", "status", "cancel", "store"])
+
+
+def _started(job_id: str, session_id: str = "") -> BridgeResponse:
+    return BridgeResponse(
+        success=True,
+        job_id=job_id,
+        status="running",
+        SESSION_ID=session_id,
+        cwd="/work",
+    )
 
 
 def test_orchestrator_create_and_persist_pipeline(tmp_path: Path):
     store = SessionStore(tmp_path / "sessions")
-    mock_supervisor = MagicMock()
+    mock_supervisor = _mock_supervisor()
     state_file = tmp_path / "orchestrator_state.json"
 
     orchestrator = Orchestrator(
@@ -58,7 +71,7 @@ def test_orchestrator_create_and_persist_pipeline(tmp_path: Path):
 
 def test_orchestrator_step_chaining_success(tmp_path: Path):
     store = SessionStore(tmp_path / "sessions")
-    mock_supervisor = MagicMock()
+    mock_supervisor = _mock_supervisor()
     mock_supervisor.store = store
     state_file = tmp_path / "orchestrator_state.json"
 
@@ -79,13 +92,7 @@ def test_orchestrator_step_chaining_success(tmp_path: Path):
     )
 
     # Tick 1: Starts Step 1
-    mock_supervisor.start_job.return_value = JobRecord(
-        job_id="job_step_1",
-        status="running",
-        cwd="/work",
-        request={"prompt": "Do task 1"},
-        session_id="sess_chain",
-    )
+    mock_supervisor.start.return_value = _started("job_step_1", "sess_chain")
 
     orchestrator._tick()
 
@@ -113,13 +120,7 @@ def test_orchestrator_step_chaining_success(tmp_path: Path):
         request={"prompt": "Do task 1"},
         finished_at="2026-10-15T12:00:00Z",
     )
-    mock_supervisor.start_job.return_value = JobRecord(
-        job_id="job_step_2",
-        status="running",
-        cwd="/work",
-        request={"prompt": "Do task 2"},
-        session_id="sess_chain",
-    )
+    mock_supervisor.start.return_value = _started("job_step_2", "sess_chain")
 
     orchestrator._tick()
 
@@ -149,7 +150,7 @@ def test_orchestrator_step_chaining_success(tmp_path: Path):
 
 def test_orchestrator_step_failure_stops_pipeline(tmp_path: Path):
     store = SessionStore(tmp_path / "sessions")
-    mock_supervisor = MagicMock()
+    mock_supervisor = _mock_supervisor()
     mock_supervisor.store = store
     state_file = tmp_path / "orchestrator_state.json"
 
@@ -170,12 +171,7 @@ def test_orchestrator_step_failure_stops_pipeline(tmp_path: Path):
     )
 
     # Launch step 1
-    mock_supervisor.start_job.return_value = JobRecord(
-        job_id="job_fail_1",
-        status="running",
-        cwd="/work",
-        request={},
-    )
+    mock_supervisor.start.return_value = _started("job_fail_1")
     orchestrator._tick()
 
     # Step 1 reports failed
@@ -197,9 +193,71 @@ def test_orchestrator_step_failure_stops_pipeline(tmp_path: Path):
     assert pipe.steps[1].job_id is None
 
 
+def test_orchestrator_uses_supervisor_contract_and_preserves_step_options(tmp_path: Path):
+    store = SessionStore(tmp_path / "sessions")
+    mock_supervisor = _mock_supervisor()
+    orchestrator = Orchestrator(
+        store=store,
+        supervisor=mock_supervisor,
+        state_path=tmp_path / "orchestrator_state.json",
+        auto_start_worker=False,
+    )
+    pipe = orchestrator.create_pipeline(
+        name="Configured Pipeline",
+        steps=[{
+            "prompt": "Run configured task",
+            "backend": "agy",
+            "sandbox": True,
+            "allow_write": True,
+            "worktree": False,
+            "output_protocol": "raw",
+        }],
+        auto_start=True,
+    )
+    mock_supervisor.start.return_value = _started("job_configured")
+
+    orchestrator._tick()
+
+    request = mock_supervisor.start.call_args.args[0]
+    assert request.backend == "agy"
+    assert request.sandbox is True
+    assert request.allow_write is True
+    assert request.worktree is False
+    assert request.output_protocol == "raw"
+    assert orchestrator.get_pipeline(pipe.pipeline_id).steps[0].job_id == "job_configured"
+
+
+def test_orchestrator_records_supervisor_start_rejection(tmp_path: Path):
+    store = SessionStore(tmp_path / "sessions")
+    mock_supervisor = _mock_supervisor()
+    orchestrator = Orchestrator(
+        store=store,
+        supervisor=mock_supervisor,
+        state_path=tmp_path / "orchestrator_state.json",
+        auto_start_worker=False,
+    )
+    pipe = orchestrator.create_pipeline(
+        name="Rejected Pipeline",
+        steps=[{"prompt": "Rejected task"}],
+        auto_start=True,
+    )
+    mock_supervisor.start.return_value = BridgeResponse(
+        success=False,
+        status="unknown",
+        error="policy rejected",
+    )
+
+    orchestrator._tick()
+
+    current = orchestrator.get_pipeline(pipe.pipeline_id)
+    assert current.status == "failed"
+    assert current.steps[0].status == "failed"
+    assert current.steps[0].error == "policy rejected"
+
+
 def test_orchestrator_cancellation(tmp_path: Path):
     store = SessionStore(tmp_path / "sessions")
-    mock_supervisor = MagicMock()
+    mock_supervisor = _mock_supervisor()
     state_file = tmp_path / "orchestrator_state.json"
 
     orchestrator = Orchestrator(
@@ -214,16 +272,11 @@ def test_orchestrator_cancellation(tmp_path: Path):
         steps=[{"step_id": "s1", "prompt": "Long task"}],
         auto_start=True,
     )
-    mock_supervisor.start_job.return_value = JobRecord(
-        job_id="job_to_cancel",
-        status="running",
-        cwd="/work",
-        request={},
-    )
+    mock_supervisor.start.return_value = _started("job_to_cancel")
     orchestrator._tick()
 
     assert orchestrator.cancel_pipeline(pipe.pipeline_id) is True
-    mock_supervisor.cancel_job.assert_called_once_with("job_to_cancel")
+    mock_supervisor.cancel.assert_called_once_with("job_to_cancel")
 
     pipe = orchestrator.get_pipeline(pipe.pipeline_id)
     assert pipe.status == "cancelled"

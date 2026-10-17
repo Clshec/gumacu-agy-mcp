@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agy_mcp.models import BridgeRequest, JobRecord
+from agy_mcp.models import BridgeRequest
 from agy_mcp.session_store import SessionStore
 from agy_mcp.utils import ensure_directory, safe_write_text, utc_now_iso
 
@@ -39,8 +39,11 @@ class StepDefinition(BaseModel):
     cwd: str = "."
     session_id: str | None = None
     timeout: int = 900
-    backend: str | None = None
-    dangerously_skip_permissions: bool = False
+    backend: str = "auto"
+    sandbox: bool = False
+    allow_write: bool = False
+    worktree: bool | None = None
+    output_protocol: str = "codex"
 
 
 class StepExecution(BaseModel):
@@ -53,6 +56,11 @@ class StepExecution(BaseModel):
     cwd: str = "."
     session_id: str | None = None
     timeout: int = 900
+    backend: str = "auto"
+    sandbox: bool = False
+    allow_write: bool = False
+    worktree: bool | None = None
+    output_protocol: str = "codex"
     job_id: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
@@ -164,6 +172,11 @@ class Orchestrator:
                 cwd = str(s.get("cwd") or ".")
                 step_session = s.get("session_id")
                 timeout = int(s.get("timeout") or 900)
+                backend = str(s.get("backend") or "auto")
+                sandbox = bool(s.get("sandbox", False))
+                allow_write = bool(s.get("allow_write", False))
+                worktree = s.get("worktree")
+                output_protocol = str(s.get("output_protocol") or "codex")
             else:
                 step_id = s.step_id
                 prompt = s.prompt
@@ -172,6 +185,11 @@ class Orchestrator:
                 cwd = str(s.cwd or ".")
                 step_session = s.session_id
                 timeout = int(s.timeout or 900)
+                backend = s.backend
+                sandbox = s.sandbox
+                allow_write = s.allow_write
+                worktree = s.worktree
+                output_protocol = s.output_protocol
 
             if not prompt:
                 raise ValueError(f"Step '{step_id}' must provide a prompt")
@@ -184,6 +202,11 @@ class Orchestrator:
                     cwd=cwd,
                     session_id=step_session,
                     timeout=timeout,
+                    backend=backend,
+                    sandbox=sandbox,
+                    allow_write=allow_write,
+                    worktree=worktree,
+                    output_protocol=output_protocol,
                     status="pending",
                 )
             )
@@ -236,7 +259,7 @@ class Orchestrator:
                 curr = pipe.steps[pipe.current_step_index]
                 if curr.status == "running" and curr.job_id:
                     try:
-                        self.supervisor.cancel_job(curr.job_id)
+                        self.supervisor.cancel(curr.job_id)
                     except Exception as exc:
                         logger.warning("Error cancelling job %s: %s", curr.job_id, exc)
                     curr.status = "cancelled"
@@ -279,17 +302,24 @@ class Orchestrator:
                     mode=safe_mode,
                     cwd=step.cwd or ".",
                     timeout=step.timeout or 900,
+                    backend=step.backend,
+                    sandbox=step.sandbox,
+                    allow_write=step.allow_write,
+                    worktree=step.worktree,
+                    output_protocol=step.output_protocol,
                 )
 
                 try:
-                    record = self.supervisor.start_job(req)
-                    step.job_id = record.job_id
+                    response = self.supervisor.start(req)
+                    if not response.success or not response.job_id:
+                        raise RuntimeError(response.error or "Supervisor did not start the job")
+                    step.job_id = response.job_id
                     step.status = "running"
                     step.started_at = utc_now_iso()
-                    if not pipe.session_id and record.session_id:
-                        pipe.session_id = record.session_id
-                    if not step.session_id and record.session_id:
-                        step.session_id = record.session_id
+                    if not pipe.session_id and response.SESSION_ID:
+                        pipe.session_id = response.SESSION_ID
+                    if not step.session_id and response.SESSION_ID:
+                        step.session_id = response.SESSION_ID
                     pipe.updated_at = utc_now_iso()
                     self._save_state()
                     logger.info(
@@ -372,16 +402,25 @@ class Orchestrator:
                                 mode=safe_mode,
                                 cwd=next_step.cwd or ".",
                                 timeout=next_step.timeout or 900,
+                                backend=next_step.backend,
+                                sandbox=next_step.sandbox,
+                                allow_write=next_step.allow_write,
+                                worktree=next_step.worktree,
+                                output_protocol=next_step.output_protocol,
                             )
                             try:
-                                nrec = self.supervisor.start_job(next_req)
-                                next_step.job_id = nrec.job_id
+                                nresp = self.supervisor.start(next_req)
+                                if not nresp.success or not nresp.job_id:
+                                    raise RuntimeError(
+                                        nresp.error or "Supervisor did not start the job"
+                                    )
+                                next_step.job_id = nresp.job_id
                                 next_step.status = "running"
                                 next_step.started_at = utc_now_iso()
-                                if not pipe.session_id and nrec.session_id:
-                                    pipe.session_id = nrec.session_id
-                                if not next_step.session_id and nrec.session_id:
-                                    next_step.session_id = nrec.session_id
+                                if not pipe.session_id and nresp.SESSION_ID:
+                                    pipe.session_id = nresp.SESSION_ID
+                                if not next_step.session_id and nresp.SESSION_ID:
+                                    next_step.session_id = nresp.SESSION_ID
                             except Exception as nexc:
                                 next_step.status = "failed"
                                 next_step.error = str(nexc)

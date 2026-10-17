@@ -6,6 +6,16 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Repair local Codex pipeline execution by calling the Supervisor's supported
+  `start` and `cancel` interfaces instead of the nonexistent `start_job` and
+  `cancel_job` methods.
+- Preserve per-step backend, sandbox, write, worktree, and output-protocol
+  settings when the Orchestrator creates background jobs.
+- Constrain Orchestrator test doubles to the real Supervisor interface so API
+  drift fails tests instead of being silently accepted by unrestricted mocks.
+
 ## [0.1.9] — 2026-10-04
 
 ### Added

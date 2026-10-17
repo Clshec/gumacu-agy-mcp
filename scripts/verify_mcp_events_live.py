@@ -12,18 +12,16 @@ Executes:
 
 from __future__ import annotations
 
-import asyncio
-import json
 import subprocess
 import sys
-from pathlib import Path
 
 SSH_CMD = [
     "C:/Windows/System32/OpenSSH/ssh.exe",
     "-T",
+    "-i", "C:/Users/TechnoHouse/.ssh/hhh.pem",
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
-    "159.195.65.10",
+    "root@159.195.65.10",
     "/tmp/gumacu-agy-review.WyP04n3d/venv/bin/python",
     "-",
 ]
@@ -63,7 +61,7 @@ class MockReceiver(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         data = json.loads(body.decode("utf-8"))
-        
+
         # Challenge verification
         if data.get("type") == "verification":
             received_challenges.append(data)
@@ -72,11 +70,12 @@ class MockReceiver(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"challenge": data["challenge"]}).encode("utf-8"))
             return
-            
+
         # Webhook delivery
         received_events.append({
             "headers": dict(self.headers),
             "body": data,
+            "raw": body,
         })
         self.send_response(200)
         self.end_headers()
@@ -104,7 +103,7 @@ async def run_probe():
         async with ClientSession(read, write) as session:
             init_res = await session.initialize()
             print("[+] Initialized MCP session. Server version:", init_res.serverInfo.version)
-            assert init_res.serverInfo.version == "0.1.11", f"Unexpected version: {init_res.serverInfo.version}"
+            assert init_res.serverInfo.version == "0.1.12", f"Unexpected version: {init_res.serverInfo.version}"
 
             # 2. Test server/discover via raw request
             discover_req = DiscoverRequest()
@@ -127,7 +126,7 @@ async def run_probe():
             sub_req = SubscribeEventRequest(
                 params=SubscribeEventParams(
                     name=JOB_COMPLETED_EVENT,
-                    arguments={"job_id": "job_live_test"},
+                    arguments={},
                     delivery={"mode": "webhook", "url": sub_url, "secret": SECRET},
                     ttlMs=3600000,
                 )
@@ -152,11 +151,34 @@ async def run_probe():
             assert pdata.get("success") is True
             pipe_id = pdata.get("pipeline_id")
 
-            # Check agy_pipeline_status
-            pstat_res = await session.call_tool("agy_pipeline_status", {"pipeline_id": pipe_id})
-            sdata = json.loads(pstat_res.content[0].text)
+            # Check automatic orchestration through terminal state and webhook delivery.
+            deadline = time.monotonic() + 150
+            sdata = {}
+            while time.monotonic() < deadline:
+                pstat_res = await session.call_tool("agy_pipeline_status", {"pipeline_id": pipe_id})
+                sdata = json.loads(pstat_res.content[0].text)
+                status = sdata.get("pipeline", {}).get("status")
+                if status in {"completed", "failed", "cancelled"}:
+                    break
+                await asyncio.sleep(0.5)
             print("[+] agy_pipeline_status returned:", sdata.get("pipeline", {}).get("status"))
-            assert sdata.get("success") is True
+            assert sdata.get("pipeline", {}).get("status") == "completed"
+
+            event_deadline = time.monotonic() + 10
+            while not received_events and time.monotonic() < event_deadline:
+                await asyncio.sleep(0.1)
+            assert received_events, "No signed job.completed webhook was delivered"
+            delivered = received_events[-1]
+            headers = {k.lower(): v for k, v in delivered["headers"].items()}
+            assert delivered["body"]["name"] == JOB_COMPLETED_EVENT
+            assert StandardWebhooksSigner.verify(
+                headers["webhook-id"],
+                int(headers["webhook-timestamp"]),
+                delivered["raw"],
+                SECRET,
+                headers["webhook-signature"],
+            )
+            print("[+] Signed job.completed webhook received and verified")
 
             # 6. Test events/unsubscribe
             unsub_req = UnsubscribeEventRequest(
