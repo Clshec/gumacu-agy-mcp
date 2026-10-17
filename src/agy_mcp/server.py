@@ -1280,6 +1280,51 @@ def agy_active_jobs_tool(limit: int = 20) -> ActiveJobsToolResponse:
 # ---------------------------------------------------------------------------
 
 
+def _doctor_integration_snapshot() -> dict[str, Any]:
+    """Report bridge-side integration readiness without assuming host capabilities.
+
+    A registered server tool or webhook subscription does not prove that an
+    ordinary ChatGPT chat has a tool binding or can be automatically resumed.
+    """
+    manager = getattr(mcp, "_tool_manager", None)
+    registered = getattr(manager, "_tools", {})
+    tool_names = sorted(registered) if isinstance(registered, dict) else []
+
+    subscription_count: int | None = None
+    if _subscription_store is not None:
+        try:
+            subscription_count = len(_subscription_store.list_all())
+        except Exception:  # noqa: BLE001 - diagnostics must not fail the doctor
+            pass
+
+    pending_chat: bool | None = None
+    pending_telegram: bool | None = None
+    if _notification_outbox is not None:
+        try:
+            pending_chat = bool(_notification_outbox.list_pending(limit=1)["count"])
+            pending_telegram = bool(
+                _notification_outbox.list_telegram_undelivered(limit=1)["count"]
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return {
+        "server_registered_tools": tool_names,
+        "server_registered_tool_count": len(tool_names),
+        "event_subscription_count": subscription_count,
+        "telegram_configured": bool(
+            _notification_dispatcher and _notification_dispatcher.telegram_configured
+        ),
+        "telegram_bot_initialized": bool(
+            _notification_dispatcher and _notification_dispatcher.bot is not None
+        ),
+        "pending_chat_notifications": pending_chat,
+        "pending_telegram_deliveries": pending_telegram,
+        "client_visible_tools": "not_observable_from_mcp_server",
+        "chat_auto_resume_verified": False,
+    }
+
+
 @mcp.tool(
     name="agy_doctor",
     description=(
@@ -1311,7 +1356,7 @@ async def agy_doctor_tool(force_refresh: bool = False) -> DoctorToolResponse:
         return _wrapper_failure(safety, exc, DoctorToolResponse, version=__version__)
     return DoctorToolResponse(
         success=True,
-        report=report.to_dict(),
+        report={**report.to_dict(), "integration": _doctor_integration_snapshot()},
         version=__version__,
     )
 
