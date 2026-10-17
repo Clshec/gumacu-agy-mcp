@@ -158,3 +158,82 @@ def test_telegram_replay_schedules_all_pages_even_when_delivery_is_fast(
     assert len(sent) == 105
     assert len(set(sent)) == 105
     assert outbox.list_telegram_undelivered()["count"] == 0
+
+
+def test_interactive_telegram_retries_transient_failure(tmp_path: Path):
+    """The interactive bot must retry, just like standalone notifications."""
+    outbox = NotificationOutbox(tmp_path / "notifications.json")
+    dispatcher = NotificationDispatcher(
+        outbox, token="", chat_id="", retry_delays=(0.0, 0.0, 0.0),
+    )
+    item = outbox.record(_record(), summary="done")
+
+    class FakeStore:
+        def get_job(self, job_id):
+            assert job_id == item["job_id"]
+            return _record()
+
+    class FakeBot:
+        store = FakeStore()
+
+        def __init__(self):
+            self.attempts = 0
+
+        def is_telegram_job(self, record):
+            return False
+
+        def terminal_message(self, record, summary):
+            return summary
+
+        def _job_buttons(self, record):
+            return []
+
+        def send(self, message, *, buttons):
+            assert message == "done"
+            self.attempts += 1
+            return self.attempts >= 2
+
+    bot = FakeBot()
+    dispatcher.bot = bot
+    dispatcher._deliver_telegram(item)
+
+    stored = NotificationOutbox(outbox.path).list_pending()["notifications"][0]
+    assert bot.attempts == 2
+    assert stored["telegram"]["delivered"] is True
+    assert stored["telegram"]["attempts"] == 2
+    assert stored["telegram"]["last_error"] is None
+
+
+def test_interactive_telegram_persists_failure_for_replay(tmp_path: Path):
+    outbox = NotificationOutbox(tmp_path / "notifications.json")
+    dispatcher = NotificationDispatcher(
+        outbox, token="", chat_id="", retry_delays=(0.0, 0.0),
+    )
+    item = outbox.record(_record(), summary="done")
+
+    class FakeStore:
+        def get_job(self, job_id):
+            return _record()
+
+    class FailingBot:
+        store = FakeStore()
+
+        def is_telegram_job(self, record):
+            return False
+
+        def terminal_message(self, record, summary):
+            return summary
+
+        def _job_buttons(self, record):
+            return []
+
+        def send(self, message, *, buttons):
+            raise TimeoutError("temporary network failure")
+
+    dispatcher.bot = FailingBot()
+    dispatcher._deliver_telegram(item)
+    stored = NotificationOutbox(outbox.path).list_pending()["notifications"][0]
+    assert stored["telegram"]["delivered"] is False
+    assert stored["telegram"]["attempts"] == 2
+    assert stored["telegram"]["last_error"] == "TimeoutError"
+    assert outbox.list_telegram_undelivered()["count"] == 1
