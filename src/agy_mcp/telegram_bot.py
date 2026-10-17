@@ -18,6 +18,9 @@ from agy_mcp.models import BridgeRequest, CanonicalEvent, JobRecord
 from agy_mcp.utils import ensure_directory, safe_write_text
 
 logger = logging.getLogger(__name__)
+# httpx logs full request URLs at INFO; Telegram embeds the bot credential in
+# the URL path, so production must never allow that logger to emit requests.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 TERMINAL = {"completed", "failed", "cancelled", "upstream_error", "quota_exhausted", "timeout", "no_final_response"}
 MEANINGFUL = {"conversation_started", "conversation_resumed", "print_starting", "turn_start", "stream_start", "rewind", "quota_exhausted", "timeout", "success", "cancelled"}
 
@@ -191,6 +194,8 @@ class TelegramBot:
         return "\n".join(lines)
 
     def _poll_loop(self) -> None:
+        if "offset" not in self._state:
+            self._discard_backlog()
         while not self._stop.is_set():
             try:
                 offset = int(self._state.get("offset", 0))
@@ -205,6 +210,23 @@ class TelegramBot:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Telegram polling failed: %s", type(exc).__name__)
                 self._stop.wait(5)
+
+    def _discard_backlog(self) -> None:
+        """Pin the initial offset after the newest update without executing history."""
+
+        try:
+            response = httpx.get(
+                f"{self._api}/getUpdates",
+                params={"offset": -1, "limit": 1, "timeout": 0},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            updates = response.json().get("result", [])
+            latest = max((int(item.get("update_id", -1)) for item in updates), default=-1)
+            self._state["offset"] = latest + 1
+            self._save_state()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Telegram backlog initialization failed: %s", type(exc).__name__)
 
     def _handle_update(self, update: dict[str, Any]) -> None:
         callback = update.get("callback_query")
