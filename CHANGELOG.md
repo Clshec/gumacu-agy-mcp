@@ -34,6 +34,10 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Keep the Telegram conversation title stable across follow-up turns and send
+  automatic progress snapshots every three minutes while a Telegram-started
+  Antigravity job is still running.
+
 - Remove the obsolete `agy-watch` console and SSH watcher now that Telegram
   provides persistent monitoring without an open terminal.
 
