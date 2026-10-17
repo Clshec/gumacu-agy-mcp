@@ -246,3 +246,49 @@ def test_advanced_session_browser_has_navigation_and_session_panels(tmp_path: Pa
     assert "menu:sessions:1" in callback_values
     assert "menu:home" in callback_values
 
+
+
+def test_existing_session_title_wins_over_followup_prompt_title(tmp_path: Path, monkeypatch):
+    """A ChatGPT follow-up may have its own prompt title but not rename the session."""
+    monkeypatch.setattr(
+        "agy_mcp.telegram_bot.conversation_title",
+        lambda session_id: "An updated Antigravity-generated title",
+    )
+    original = record("job_first", "Gumacu MCP integration")
+    second = record("job_second", "Run another pytest pass")
+    store = FakeStore([second, original])
+    bot = make_bot(tmp_path, store)
+
+    first_title = bot._inherit_conversation_title(original)
+    assert first_title.antigravity_title == "Gumacu MCP integration"
+
+    resumed = bot._inherit_conversation_title(second)
+    assert resumed.antigravity_title == "Gumacu MCP integration"
+    assert bot._state["conversation_titles"]["conv-1"] == "Gumacu MCP integration"
+
+    # A new TelegramBot reads the same durable title after process restart.
+    restarted = make_bot(tmp_path, store)
+    third = record("job_third", "Deploy the server")
+    assert restarted._inherit_conversation_title(third).antigravity_title == (
+        "Gumacu MCP integration"
+    )
+
+
+def test_new_session_keeps_its_own_independent_title(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("agy_mcp.telegram_bot.conversation_title", lambda session_id: None)
+    first = record("job_a", "Gumacu MCP integration")
+    independent = record("job_b", "Separate Odoo project")
+    independent.session_id = "conv-2"
+    store = FakeStore([independent, first])
+    bot = make_bot(tmp_path, store)
+
+    assert bot._inherit_conversation_title(first).antigravity_title == (
+        "Gumacu MCP integration"
+    )
+    assert bot._inherit_conversation_title(independent).antigravity_title == (
+        "Separate Odoo project"
+    )
+    assert bot._state["conversation_titles"] == {
+        "conv-1": "Gumacu MCP integration",
+        "conv-2": "Separate Odoo project",
+    }
