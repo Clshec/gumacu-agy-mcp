@@ -39,12 +39,12 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 async def main():
     server_params = StdioServerParameters(
-        command='/tmp/gumacu-agy-review.WyP04n3d/venv/bin/python',
+        command='/opt/gumacu-agy-mcp/venv/bin/python',
         args=['-m', 'agy_mcp.cli'],
         env={
             'GUMACU_REMOTE_PROFILE': 'operator',
-            'GUMACU_ALLOWED_WORKSPACES': '/root/gumacu-infrastructure:/tmp/gumacu-agy-review.WyP04n3d/workspace',
-            'AGY_MCP_SESSION_ROOT': '/tmp/gumacu-agy-review.WyP04n3d/live-sessions',
+            'GUMACU_ALLOWED_WORKSPACES': '/root/gumacu-infrastructure',
+            'AGY_MCP_SESSION_ROOT': '/var/lib/gumacu-agy-mcp/sessions',
         }
     )
     async with stdio_client(server_params) as (read, write):
@@ -65,7 +65,7 @@ asyncio.run(main())
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=yes",
         "159.195.65.10",
-        "/tmp/gumacu-agy-review.WyP04n3d/venv/bin/python",
+        "/opt/gumacu-agy-mcp/venv/bin/python",
         "-",
     ]
     try:
