@@ -1172,6 +1172,7 @@ def agy_sessions_tool(limit: int = 50) -> SessionsToolResponse:
         success=True,
         count=len(records),
         records=list(records),
+        integration=_doctor_integration_snapshot(),
     )
 
 
