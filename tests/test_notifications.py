@@ -118,8 +118,9 @@ def test_telegram_replay_survives_chat_acknowledgement(tmp_path: Path, monkeypat
 
     monkeypatch.setattr("agy_mcp.notifications.threading.Thread", CapturingThread)
     dispatcher = NotificationDispatcher(
-        outbox, token="test-token", chat_id="123", retry_delays=(0.0,)
+        outbox, token="", chat_id="", retry_delays=(0.0,)
     )
+    dispatcher._token, dispatcher._chat_id = "test-token", "123"
     dispatcher.replay_pending_telegram()
     assert scheduled == [item["id"]]
 
@@ -152,8 +153,9 @@ def test_telegram_replay_schedules_all_pages_even_when_delivery_is_fast(
 
     monkeypatch.setattr("agy_mcp.notifications.threading.Thread", ImmediateThread)
     dispatcher = NotificationDispatcher(
-        outbox, token="test-token", chat_id="123", retry_delays=(0.0,)
+        outbox, token="", chat_id="", retry_delays=(0.0,)
     )
+    dispatcher._token, dispatcher._chat_id = "test-token", "123"
     dispatcher.replay_pending_telegram()
     assert len(sent) == 105
     assert len(set(sent)) == 105
