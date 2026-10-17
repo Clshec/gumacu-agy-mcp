@@ -113,12 +113,14 @@ def test_http_auth_and_device_isolation(broker: Broker) -> None:
             request("/v1/admin/submit", "w" * 40, {
                 "device_id": "windows-main", "action": "start", "payload": {}})
         assert err.value.code == 401
+        err.value.close()
         answer = request("/v1/admin/submit", "secret" * 8, {
             "device_id": "windows-main", "action": "start", "payload": {}})
         ident = answer["request_id"]
         with pytest.raises(HTTPError) as err:
             request("/v1/agent/poll", "l" * 40, {"device_id": "windows-main"})
         assert err.value.code == 401
+        err.value.close()
         poll = request("/v1/agent/poll", "w" * 40, {"device_id": "windows-main"})
         assert poll["work"]["id"] == ident
         complete = request("/v1/agent/finish", "w" * 40, {
