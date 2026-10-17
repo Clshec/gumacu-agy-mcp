@@ -125,6 +125,29 @@ class NotificationOutbox:
                 "has_more": next_cursor < len(pending),
             }
 
+    def snapshot_telegram_undelivered(self) -> list[dict[str, Any]]:
+        """Atomically snapshot Telegram deliveries, independent of chat ACKs."""
+        with self._lock:
+            return [
+                dict(item)
+                for item in sorted(self._records.values(), key=lambda item: item["created_at"])
+                if not item.get("telegram", {}).get("delivered")
+            ]
+
+    def list_telegram_undelivered(self, *, cursor: int = 0, limit: int = 20) -> dict[str, Any]:
+        """Page Telegram deliveries independently of ChatGPT acknowledgement."""
+        if cursor < 0 or not 1 <= limit <= 100:
+            raise ValueError("cursor must be non-negative and limit must be between 1 and 100")
+        undelivered = self.snapshot_telegram_undelivered()
+        page = undelivered[cursor : cursor + limit]
+        next_cursor = cursor + len(page)
+        return {
+            "notifications": page,
+            "count": len(page),
+            "next_cursor": next_cursor if next_cursor < len(undelivered) else None,
+            "has_more": next_cursor < len(undelivered),
+        }
+
     def acknowledge(self, notification_id: str) -> dict[str, Any] | None:
         with self._lock:
             item = self._records.get(notification_id)
@@ -240,22 +263,16 @@ class NotificationDispatcher:
     def replay_pending_telegram(self) -> None:
         """Retry undelivered durable notifications after a process restart."""
 
-        cursor = 0
-        while True:
-            page = self.outbox.list_pending(cursor=cursor, limit=100)
-            for item in page["notifications"]:
-                if item.get("telegram", {}).get("delivered"):
-                    continue
-                thread = threading.Thread(
-                    target=self._deliver_telegram,
-                    args=(item,),
-                    name=f"agy-telegram-replay-{item['id'][-8:]}",
-                    daemon=True,
-                )
-                thread.start()
-            if page["next_cursor"] is None:
-                break
-            cursor = page["next_cursor"]
+        # Snapshot atomically before starting workers: a fast delivery must
+        # not shrink the filtered collection during cursor-based pagination.
+        for item in self.outbox.snapshot_telegram_undelivered():
+            thread = threading.Thread(
+                target=self._deliver_telegram,
+                args=(item,),
+                name=f"agy-telegram-replay-{item['id'][-8:]}",
+                daemon=True,
+            )
+            thread.start()
 
     def _message(self, item: dict[str, Any]) -> str:
         status = str(item["status"])
