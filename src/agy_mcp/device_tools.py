@@ -11,12 +11,27 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from pathlib import Path
+
 from agy_mcp.device_gateway import MAX_BODY
 
 
 def gateway_call(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     url = os.environ.get("AGY_DEVICE_GATEWAY_URL", "")
+    if not url:
+        url = "http://127.0.0.1:8766"
     token = os.environ.get("AGY_DEVICE_ADMIN_TOKEN", "")
+    if not token:
+        env_file = Path("/etc/gumacu-agy-devices/gateway.env")
+        if env_file.is_file():
+            try:
+                for line in env_file.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line.startswith("AGY_DEVICE_ADMIN_TOKEN=") and "=" in line:
+                        token = line.split("=", 1)[1].strip().strip("'\"")
+                        break
+            except OSError:
+                pass
     if not url or not (url.startswith("http://127.0.0.1:")
                        or url.startswith("http://localhost:")):
         return {"success": False, "error": "private device gateway is not configured"}
@@ -36,6 +51,81 @@ def gateway_call(path: str, payload: dict[str, Any] | None = None) -> dict[str, 
         return {"success": False, "error": "device gateway is unavailable or denied access"}
 
 
+def _notify_if_terminal(device: str, ident: str, result: dict[str, Any]) -> None:
+    try:
+        from agy_mcp.notifications import NotificationDispatcher, NotificationOutbox, TERMINAL_STATUSES
+        from agy_mcp.safety import SafetyPolicy
+        outbox_path = Path(os.environ.get(
+            "AGY_MCP_NOTIFICATIONS_PATH",
+            "/var/lib/gumacu-agy-mcp/sessions/notifications.json"
+        ))
+        if not outbox_path.parent.exists():
+            return
+        record = result.get("record") if isinstance(result.get("record"), dict) else None
+        term_status = None
+        if record and record.get("status") in TERMINAL_STATUSES:
+            term_status = str(record["status"])
+        elif result.get("status") in TERMINAL_STATUSES:
+            term_status = str(result["status"])
+        elif result.get("success") is False and result.get("error"):
+            term_status = "failed"
+        if not term_status:
+            return
+
+        job_id = None
+        if record and record.get("job_id"):
+            job_id = str(record["job_id"])
+        elif result.get("job_id"):
+            job_id = str(result["job_id"])
+        else:
+            job_id = "job_r_" + ident[5:]
+
+        session_id = None
+        if record and record.get("session_id"):
+            session_id = str(record["session_id"])
+        elif result.get("SESSION_ID"):
+            session_id = str(result["SESSION_ID"])
+
+        title = None
+        if record and record.get("antigravity_title"):
+            title = str(record["antigravity_title"])
+        elif record and record.get("task_preview"):
+            title = str(record["task_preview"])
+        elif result.get("title"):
+            title = str(result["title"])
+
+        summary = ""
+        if result.get("result_text"):
+            summary = str(result["result_text"])
+        elif record and record.get("error"):
+            summary = str(record["error"])
+        elif result.get("error"):
+            summary = str(result["error"])
+        elif record and isinstance(record.get("progress"), dict) and record["progress"].get("summary"):
+            summary = str(record["progress"]["summary"])
+        else:
+            summary = f"Remote task on {device} reached {term_status}."
+
+        safety = SafetyPolicy()
+        redacted_summary = safety.redact(summary)[:1000]
+
+        dispatcher = NotificationDispatcher(NotificationOutbox(outbox_path))
+        dispatcher.notify_job(
+            {
+                "job_id": job_id,
+                "session_id": session_id,
+                "antigravity_title": title,
+                "status": term_status,
+            },
+            summary=redacted_summary,
+            reason_code=term_status,
+            device_id=device,
+            request_id=ident,
+        )
+    except Exception:
+        pass
+
+
 def await_call(ident: str, seconds: float = 10.0) -> dict[str, Any]:
     until = time.monotonic() + seconds
     while True:
@@ -44,7 +134,9 @@ def await_call(ident: str, seconds: float = 10.0) -> dict[str, Any]:
             return status
         if status.get("state") == "done":
             result = status.get("result") or {}
-            return {"device_id": status.get("device_id"), "request_id": ident, **result}
+            out = {"device_id": status.get("device_id"), "request_id": ident, **result}
+            _notify_if_terminal(status.get("device_id") or "", ident, result)
+            return out
         if time.monotonic() >= until:
             return {"success": True, "pending": True, "request_id": ident,
                     "device_id": status.get("device_id"), "state": status.get("state"),

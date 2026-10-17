@@ -20,6 +20,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from agy_mcp.notifications import (
+    NotificationDispatcher,
+    NotificationOutbox,
+    TERMINAL_STATUSES,
+)
+from agy_mcp.safety import SafetyPolicy
+
 DEVICE_ID = re.compile(r"^[a-z][a-z0-9-]{1,47}$")
 CALL_ID = re.compile(r"^call_[0-9a-f]{32}$")
 ACTIONS = frozenset({"start", "status", "read", "result", "cancel", "sessions", "doctor"})
@@ -51,7 +58,12 @@ def load_devices(path: Path) -> dict[str, dict[str, Any]]:
 class Broker:
     """SQLite-backed, process-local lock; leased work is never silently replayed."""
 
-    def __init__(self, db_path: Path, devices: dict[str, dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        devices: dict[str, dict[str, Any]],
+        dispatcher: NotificationDispatcher | None = None,
+    ) -> None:
         self.devices = devices
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -67,6 +79,27 @@ class Broker:
                 device TEXT PRIMARY KEY, seen REAL NOT NULL, capabilities TEXT NOT NULL)""")
             self.conn.execute("""CREATE TABLE IF NOT EXISTS affinity (
                 session TEXT PRIMARY KEY, device TEXT NOT NULL)""")
+            self.conn.execute("""CREATE TABLE IF NOT EXISTS running_jobs (
+                job_id TEXT PRIMARY KEY, device TEXT NOT NULL, request_id TEXT NOT NULL,
+                created REAL NOT NULL, updated REAL NOT NULL)""")
+
+        if dispatcher is not None:
+            self.dispatcher = dispatcher
+        else:
+            outbox_path = Path(os.environ.get(
+                "AGY_MCP_NOTIFICATIONS_PATH",
+                "/var/lib/gumacu-agy-mcp/sessions/notifications.json",
+            ))
+            if not outbox_path.parent.exists():
+                outbox_path = db_path.parent / "notifications.json"
+            try:
+                outbox = NotificationOutbox(outbox_path)
+                self.dispatcher = NotificationDispatcher(outbox)
+            except Exception:
+                self.dispatcher = None
+
+        self._stop_watcher = False
+        self._watcher_thread: threading.Thread | None = None
 
     def submit(self, device: str, action: str, payload: dict[str, Any]) -> str:
         if device not in self.devices:
@@ -140,6 +173,18 @@ class Broker:
                                   (session, device))
             self.conn.execute("UPDATE calls SET state='done',result=?,updated=?"
                               " WHERE id=?", (value, time.time(), ident))
+            action = str(row["action"])
+            if action == "start":
+                status = result.get("status")
+                job_id = result.get("job_id")
+                if status == "running" and job_id:
+                    now = time.time()
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO running_jobs(job_id,device,request_id,created,updated)"
+                        " VALUES(?,?,?,?,?)",
+                        (job_id, device, ident, now, now),
+                    )
+        self.notify_remote_terminal(device, ident, result, action=action)
 
     def get(self, ident: str) -> dict[str, Any]:
         if not CALL_ID.fullmatch(ident):
@@ -173,6 +218,130 @@ class Broker:
                  "last_seen": seen[k]["seen"] if k in seen else None,
                  "capabilities": json.loads(seen[k]["capabilities"]) if k in seen else {}}
                 for k, v in sorted(self.devices.items())]
+
+    def notify_remote_terminal(
+        self,
+        device: str,
+        ident: str,
+        result: dict[str, Any],
+        action: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.dispatcher or not isinstance(result, dict):
+            return None
+        record = result.get("record") if isinstance(result.get("record"), dict) else None
+        status = None
+        if record and record.get("status") in TERMINAL_STATUSES:
+            status = str(record["status"])
+        elif result.get("status") in TERMINAL_STATUSES:
+            status = str(result["status"])
+        elif action == "start" and result.get("success") is False:
+            status = "failed"
+
+        if not status:
+            return None
+
+        job_id = None
+        if record and record.get("job_id"):
+            job_id = str(record["job_id"])
+        elif result.get("job_id"):
+            job_id = str(result["job_id"])
+        else:
+            job_id = "job_r_" + ident[5:]
+
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM running_jobs WHERE job_id=?", (job_id,))
+
+        session_id = None
+        if record and record.get("session_id"):
+            session_id = str(record["session_id"])
+        elif result.get("SESSION_ID"):
+            session_id = str(result["SESSION_ID"])
+
+        title = None
+        if record and record.get("antigravity_title"):
+            title = str(record["antigravity_title"])
+        elif record and record.get("task_preview"):
+            title = str(record["task_preview"])
+        elif result.get("title"):
+            title = str(result["title"])
+
+        summary = ""
+        if result.get("result_text"):
+            summary = str(result["result_text"])
+        elif record and record.get("error"):
+            summary = str(record["error"])
+        elif result.get("error"):
+            summary = str(result["error"])
+        elif record and isinstance(record.get("progress"), dict) and record["progress"].get("summary"):
+            summary = str(record["progress"]["summary"])
+        else:
+            summary = f"Remote task on {device} reached {status}."
+
+        safety = SafetyPolicy()
+        redacted_summary = safety.redact(summary)[:1000]
+
+        payload = {
+            "job_id": job_id,
+            "session_id": session_id,
+            "antigravity_title": title,
+            "status": status,
+        }
+        try:
+            return self.dispatcher.notify_job(
+                payload,
+                summary=redacted_summary,
+                reason_code=status,
+                device_id=device,
+                request_id=ident,
+            )
+        except Exception:
+            return None
+
+    def check_running_jobs(self) -> None:
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT job_id, device, request_id FROM running_jobs"
+            ).fetchall()
+        now = time.time()
+        for row in rows:
+            job_id, device = row["job_id"], row["device"]
+            if device not in self.devices:
+                continue
+            with self.lock:
+                p = self.conn.execute("SELECT seen FROM presence WHERE device=?", (device,)).fetchone()
+                if not p or (now - p["seen"]) > 35:
+                    continue
+                existing = self.conn.execute(
+                    "SELECT id FROM calls WHERE device=? AND action='status' AND payload LIKE ? AND state IN ('queued', 'leased')",
+                    (device, f'%"{job_id}"%'),
+                ).fetchone()
+            if existing is None:
+                try:
+                    self.submit(device, "status", {"job_id": job_id})
+                except Exception:
+                    pass
+
+    def start_watcher(self, interval: float = 3.0) -> None:
+        if self._watcher_thread is not None and self._watcher_thread.is_alive():
+            return
+
+        def loop():
+            while not self._stop_watcher:
+                try:
+                    self.check_running_jobs()
+                except Exception:
+                    pass
+                time.sleep(interval)
+
+        self._watcher_thread = threading.Thread(
+            target=loop, daemon=True, name="broker-running-jobs-watcher"
+        )
+        self._watcher_thread.start()
+
+    def close(self) -> None:
+        self._stop_watcher = True
+        with self.lock:
+            self.conn.close()
 
 
 def make_handler(broker: Broker, admin_token: str):
@@ -232,6 +401,9 @@ def make_handler(broker: Broker, admin_token: str):
             elif self.command == "POST" and path == "/v1/agent/finish":
                 broker.finish(device, data["id"], data["claim"], data["result"])
                 self.send(200, {"success": True})
+            elif self.command == "POST" and path == "/v1/agent/notify":
+                broker.notify_remote_terminal(device, data.get("id") or "", data)
+                self.send(200, {"success": True})
             else:
                 self.send(404, {"success": False, "error": "unknown route"})
 
@@ -252,13 +424,18 @@ def main() -> None:
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--devices", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--outbox", type=Path, default=None)
     args = parser.parse_args()
+    if args.outbox:
+        os.environ["AGY_MCP_NOTIFICATIONS_PATH"] = str(args.outbox)
     admin_token = os.environ.get("AGY_DEVICE_ADMIN_TOKEN", "")
     if len(admin_token) < 32:
         raise SystemExit("AGY_DEVICE_ADMIN_TOKEN must be a 32+ character private secret")
     devices = load_devices(args.devices)
+    broker = Broker(args.db, devices)
+    broker.start_watcher()
     server = ThreadingHTTPServer(("127.0.0.1", args.port),
-                                 make_handler(Broker(args.db, devices), admin_token))
+                                 make_handler(broker, admin_token))
     server.serve_forever()
 
 

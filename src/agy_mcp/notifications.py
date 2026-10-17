@@ -73,14 +73,29 @@ class NotificationOutbox:
 
     def record(
         self,
-        record: JobRecord,
+        record: JobRecord | dict[str, Any],
         *,
         summary: str,
         reason_code: str | None = None,
+        device_id: str | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
-        if record.status not in TERMINAL_STATUSES:
+        if isinstance(record, dict):
+            job_id = str(record.get("job_id") or "")
+            status = str(record.get("status") or "")
+            session_id = record.get("session_id")
+            antigravity_title = record.get("antigravity_title")
+            finished_at = record.get("finished_at")
+        else:
+            job_id = record.job_id
+            status = record.status
+            session_id = record.session_id
+            antigravity_title = record.antigravity_title
+            finished_at = record.finished_at
+
+        if status not in TERMINAL_STATUSES:
             raise ValueError("notification requires a terminal job status")
-        note_id = self.notification_id(record.job_id, record.status)
+        note_id = self.notification_id(job_id, status)
         with self._lock:
             existing = self._records.get(note_id)
             if existing is not None:
@@ -88,14 +103,16 @@ class NotificationOutbox:
             now = utc_now_iso()
             item = {
                 "id": note_id,
-                "job_id": record.job_id,
-                "session_id": record.session_id,
-                "antigravity_title": record.antigravity_title,
-                "status": record.status,
-                "reason_code": reason_code or record.status,
+                "job_id": job_id,
+                "session_id": session_id,
+                "antigravity_title": antigravity_title,
+                "status": status,
+                "reason_code": reason_code or status,
                 "summary": summary[:60000],
-                "created_at": record.finished_at or now,
+                "created_at": finished_at or now,
                 "acknowledged_at": None,
+                "device_id": device_id,
+                "request_id": request_id,
                 "telegram": {
                     "configured": False,
                     "delivered": False,
@@ -234,16 +251,30 @@ class NotificationDispatcher:
 
     def notify_job(
         self,
-        record: JobRecord,
+        record: JobRecord | dict[str, Any],
         *,
         summary: str,
         reason_code: str | None = None,
+        device_id: str | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any] | None:
-        if record.status not in TERMINAL_STATUSES:
+        if isinstance(record, dict):
+            status = record.get("status")
+            job_id = record.get("job_id")
+        else:
+            status = record.status
+            job_id = record.job_id
+        if status not in TERMINAL_STATUSES:
             return None
-        if self.bot is not None:
+        if self.bot is not None and isinstance(record, JobRecord):
             record = refresh_title(self.bot.store, record)
-        item = self.outbox.record(record, summary=summary, reason_code=reason_code)
+        item = self.outbox.record(
+            record,
+            summary=summary,
+            reason_code=reason_code,
+            device_id=device_id,
+            request_id=request_id,
+        )
         if item.get("telegram", {}).get("delivered"):
             return item
         if not self.telegram_configured:
@@ -254,7 +285,7 @@ class NotificationDispatcher:
         thread = threading.Thread(
             target=self._deliver_telegram,
             args=(item,),
-            name=f"agy-telegram-{record.job_id[-12:]}",
+            name=f"agy-telegram-{str(job_id)[-12:]}",
             daemon=True,
         )
         thread.start()
@@ -277,13 +308,16 @@ class NotificationDispatcher:
     def _message(self, item: dict[str, Any]) -> str:
         status = str(item["status"])
         icon = "✅" if status == "completed" else "⛔" if status == "quota_exhausted" else "⚠️"
-        return (
-            f"{icon} <b>Antigravity: {html.escape(status)}</b>\n"
-            f"Name: <b>{html.escape(str(item.get('antigravity_title') or 'pending'))}</b>\n"
-            f"Job: <code>{html.escape(str(item['job_id']))}</code>\n"
-            f"Reason: <code>{html.escape(str(item['reason_code']))}</code>\n"
-            f"{html.escape(str(item['summary']))}"
-        )
+        lines = [f"{icon} <b>Antigravity: {html.escape(status)}</b>"]
+        if item.get("device_id"):
+            lines.append(f"Device: <b>{html.escape(str(item['device_id']))}</b>")
+        lines.append(f"Name: <b>{html.escape(str(item.get('antigravity_title') or 'pending'))}</b>")
+        lines.append(f"Job: <code>{html.escape(str(item['job_id']))}</code>")
+        if item.get("request_id"):
+            lines.append(f"Request: <code>{html.escape(str(item['request_id']))}</code>")
+        lines.append(f"Reason: <code>{html.escape(str(item['reason_code']))}</code>")
+        lines.append(html.escape(str(item["summary"])))
+        return "\n".join(lines)
 
     def _deliver_telegram(self, item: dict[str, Any]) -> None:
         if self.bot is not None:
