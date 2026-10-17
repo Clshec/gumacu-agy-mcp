@@ -11,6 +11,7 @@ READ_TOOLS = frozenset({"agy_status", "agy_read", "agy_result_page", "agy_sessio
 CONTROLLED_TOOLS = READ_TOOLS | {"agy_start", "agy_cancel", "agy_pipeline_start", "agy_pipeline_cancel"}
 OPERATOR_TOOLS = CONTROLLED_TOOLS | {"agy", "agy_continue", "agy_result", "agy_doctor"}
 VALID_PROFILES = frozenset({"local", "read-only", "controlled", "controlled-write", "operator"})
+REMOTE_MAX_TIMEOUT_SECONDS = 4 * 60 * 60
 
 
 def remote_profile() -> str:
@@ -109,8 +110,8 @@ def restrict_request(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("this remote endpoint permits only the agy backend")
     if payload.get("worktree") and not operator_auth:
         raise ValueError("remote worktree creation is not enabled")
-    if not 1 <= payload.get("timeout", 900) <= 1200:
-        raise ValueError("remote timeout must be 1..1200 seconds")
+    if not 1 <= payload.get("timeout", 900) <= REMOTE_MAX_TIMEOUT_SECONDS:
+        raise ValueError(f"remote timeout must be 1..{REMOTE_MAX_TIMEOUT_SECONDS} seconds")
 
     sandbox = not (operator_auth and allow_write)
     worktree = bool(payload.get("worktree", False)) if operator_auth else False
