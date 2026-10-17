@@ -1,0 +1,68 @@
+name: ChatGPT MCP client refresh release gate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: chatgpt-mcp-client-refresh-gate
+  cancel-in-progress: false
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update ChatGPT MCP refresh gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+            const title = "[Release gate] Verify ChatGPT MCP tool refresh after main update";
+            const guide = "https://github.com/" + owner + "/" + repo + "/blob/main/docs/chatgpt-mcp-client-refresh.md";
+            const release = "https://github.com/" + owner + "/" + repo + "/commit/" + sha;
+            const reminder = [
+              "Release: " + release,
+              "",
+              "ChatGPT may retain an approved/frozen MCP action snapshot. A GitHub push, MCP restart, or tunnel restart does NOT prove client tools refreshed.",
+              "",
+              "- [ ] Record deployed runtime SHA and focused tests",
+              "- [ ] Verify production MCP endpoint tools/list contains expected tools (not just agy_doctor internal registry)",
+              "- [ ] Refresh/review/enable updated actions in ChatGPT app/connection settings where supported",
+              "- [ ] Confirm tools appear in a new ChatGPT conversation (including agy_devices and device start/status/read/result/continue)",
+              "- [ ] Verify harmless Windows E2E and Telegram terminal notification when applicable",
+              "- [ ] Record acceptance evidence and close this issue only after client verification",
+              "",
+              "Guide: " + guide,
+              "No API keys, OAuth credentials, Telegram tokens, or private URLs in this issue."
+            ].join("\n");
+            const existing = (await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: "open", per_page: 100
+            })).find(item => !item.pull_request && item.title === title);
+            let issue;
+            if (existing) {
+              issue = existing;
+              const recent = await github.rest.issues.listComments({
+                owner, repo, issue_number: issue.number, per_page: 100
+              });
+              const alreadyNoted = recent.data.some(item => (item.body || "").includes(release));
+              if (!alreadyNoted) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issue.number, body: reminder
+                });
+              }
+            } else {
+              const created = await github.rest.issues.create({
+                owner, repo, title, body: reminder
+              });
+              issue = created.data;
+            }
+            await core.summary
+              .addHeading("ChatGPT MCP tool refresh: human acceptance required")
+              .addRaw("Commit: " + release + "\n\nTracking issue: " + issue.html_url + "\n\nFollow the runbook before closing the release gate.")
+              .write();
