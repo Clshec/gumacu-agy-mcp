@@ -459,11 +459,6 @@ def test_klog_parser_permission_denied_marks_upstream_error():
             "upstream_unauthenticated",
             "OAuth credential expired.",
         ),
-        (
-            "RESOURCE_EXHAUSTED (code 429)",
-            "upstream_resource_exhausted",
-            "quota exhausted for project.",
-        ),
     ],
 )
 def test_klog_parser_additional_upstream_statuses_mark_upstream_error(
@@ -480,6 +475,32 @@ def test_klog_parser_additional_upstream_statuses_mark_upstream_error(
     [evt] = ctx.events
     assert evt.subtype == subtype
     assert message in (evt.text or "")
+    assert ctx.had_upstream_error is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "RESOURCE_EXHAUSTED (code 429): quota exhausted for project.",
+        "Your usage limit has been reached. Try again tomorrow.",
+        "Rate limit exceeded for this account.",
+        "No remaining model capacity is available.",
+        "All credits have been used up.",
+    ],
+)
+def test_klog_parser_marks_quota_exhausted_with_stable_reason(message: str):
+    ctx = _new_ctx()
+    adapter = AgyPrintBackend()
+
+    _handle_klog_line(f"E0527 12:00:00.000  1 log.go:1] {message}\n", ctx, adapter)
+
+    [evt] = ctx.events
+    assert evt.type == "error"
+    assert evt.subtype == "quota_exhausted"
+    assert evt.metadata["reason_code"] == "quota_exhausted"
+    assert "Antigravity quota exhausted" in (evt.text or "")
+    assert ctx.quota_exhausted is True
+    assert ctx.first_quota_error == evt.text
     assert ctx.had_upstream_error is True
 
 

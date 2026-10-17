@@ -858,6 +858,41 @@ def test_run_keeps_success_when_no_upstream_error_and_exit_zero(
     assert resp.error is None
 
 
+def test_run_promotes_quota_exhaustion_to_specific_status(monkeypatch, tmp_path: Path):
+    cap = _capability("agy", supports_log_file=True)
+    quota_message = "Antigravity quota exhausted: usage limit reached"
+    run_result = AdapterRunResult(
+        events=[
+            CanonicalEvent(
+                type="error",
+                subtype="quota_exhausted",
+                text=quota_message,
+                metadata={"reason_code": "quota_exhausted"},
+            ),
+            CanonicalEvent(type="result", subtype="quota_exhausted"),
+        ],
+        session_id="sess-quota",
+        exit_code=0,
+        duration_ms=5,
+        stdout_tail="",
+        stderr_tail="",
+        log_path=None,
+        artifacts=[],
+        had_upstream_error=True,
+        upstream_error_text=quota_message,
+        quota_exhausted=True,
+        quota_error_text=quota_message,
+    )
+    fake = _FakeAdapter(capability=cap, run_result=run_result)
+
+    monkeypatch.setattr("agy_mcp.bridge._build_adapter", lambda *_: fake)
+    resp = _run(BridgeRequest(prompt="hi", cwd=str(tmp_path)), _default_config(), _safety())
+
+    assert resp.success is False
+    assert resp.status == "quota_exhausted"
+    assert resp.error == quota_message
+
+
 def test_run_redacts_public_cwd_but_keeps_adapter_cwd_raw(monkeypatch):
     cap = _capability("agy", supports_log_file=True)
     fake = _FakeAdapter(

@@ -10,7 +10,6 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 from agy_mcp.events import (
-    JOB_CANCELLED_EVENT,
     JOB_COMPLETED_EVENT,
     JOB_FAILED_EVENT,
     DiscoverRequest,
@@ -193,7 +192,7 @@ async def test_setup_events_protocol_handlers(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_webhook_dispatch_timeout_and_no_final_response(tmp_path: Path):
+async def test_webhook_dispatch_failure_reasons(tmp_path: Path):
     store = SubscriptionStore(tmp_path / "subscriptions.json")
     delivery = EventDelivery(
         mode="webhook",
@@ -234,7 +233,19 @@ async def test_webhook_dispatch_timeout_and_no_final_response(tmp_path: Path):
         dispatcher.dispatch_job_event(empty_rec)
         await asyncio.sleep(0.1)
 
-    assert len(delivered) == 2
+        # 3. Quota exhausted: ChatGPT must get an explicit machine-readable reason.
+        quota_rec = JobRecord(
+            job_id="job_quota_1",
+            status="quota_exhausted",
+            cwd="/test",
+            request={},
+            session_id="sess_quota",
+            error="Antigravity quota exhausted: usage limit reached",
+        )
+        dispatcher.dispatch_job_event(quota_rec)
+        await asyncio.sleep(0.1)
+
+    assert len(delivered) == 3
     assert delivered[0][1] == JOB_FAILED_EVENT
     assert delivered[0][2]["status"] == "timeout"
     assert delivered[0][2]["error"] == "print timeout after 19m30s"
@@ -242,3 +253,8 @@ async def test_webhook_dispatch_timeout_and_no_final_response(tmp_path: Path):
     assert delivered[1][1] == JOB_FAILED_EVENT
     assert delivered[1][2]["status"] == "no_final_response"
     assert delivered[1][2]["error"] == "process finished with exit code 0 but produced no final response"
+
+    assert delivered[2][1] == JOB_FAILED_EVENT
+    assert delivered[2][2]["status"] == "quota_exhausted"
+    assert delivered[2][2]["reason_code"] == "quota_exhausted"
+    assert "quota exhausted" in delivered[2][2]["error"]

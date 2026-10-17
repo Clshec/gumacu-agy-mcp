@@ -350,6 +350,9 @@ def test_agy_start_status_read_cycle(reset_state, tmp_path: Path):
     record = status["record"]
     assert record["status"] == "completed"
     assert record["exit_code"] == 0
+    assert status["progress"]["event_count"] == 3
+    assert status["progress"]["phase"] == "success"
+    assert status["progress"]["detail_level"] == "operational"
 
     read = server.agy_read_tool(job_id)
     assert read["success"] is True
@@ -373,6 +376,33 @@ def test_agy_start_status_read_cycle(reset_state, tmp_path: Path):
     assert result_with_events["success"] is True
     assert result_with_events["count"] == 3
 
+
+def test_agy_status_explains_live_operational_progress(reset_state, monkeypatch):
+    record = reset_state.store.create_job(
+        job_id="job_live_progress",
+        request={"prompt": "Inspect the server load without exposing secrets"},
+    )
+    reset_state.store.append_event(
+        record.job_id,
+        CanonicalEvent(type="system", subtype="turn_start"),
+    )
+    reset_state.store.append_event(
+        record.job_id,
+        CanonicalEvent(type="tool_use", subtype="server_metrics"),
+    )
+    # Keep this synthetic job running without requiring a real worker thread.
+    monkeypatch.setattr(reset_state, "status", lambda _job_id: record)
+
+    status = server.agy_status_tool(record.job_id)
+
+    assert status["success"] is True
+    progress = status["progress"]
+    assert progress["phase"] == "server_metrics"
+    assert progress["event_count"] == 2
+    assert "Using tool: server_metrics" in progress["summary"]
+    assert "Inspect the server load" in progress["summary"]
+    assert progress["recent_activity"][-1]["description"] == "Using tool: server_metrics"
+    assert "raw" not in progress["recent_activity"][-1]
 
 def test_agy_status_unknown_returns_structured_failure(reset_state):
     out = server.agy_status_tool("job_does_not_exist_12345")
