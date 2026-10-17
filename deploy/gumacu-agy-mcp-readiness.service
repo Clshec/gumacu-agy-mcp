@@ -1,0 +1,19 @@
+[Unit]
+Description=Gumacu AGY MCP boot readiness check
+After=network-online.target antigravity-manager.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+Environment=GUMACU_REMOTE_PROFILE=operator
+Environment=GUMACU_ALLOWED_WORKSPACES=/root/gumacu-infrastructure
+Environment=AGY_MCP_SESSION_ROOT=/var/lib/gumacu-agy-mcp/sessions
+ExecStart=/opt/gumacu-agy-mcp/venv/bin/agy-doctor
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15s
+
+[Install]
+WantedBy=multi-user.target

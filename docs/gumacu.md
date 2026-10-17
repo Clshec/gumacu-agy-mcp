@@ -133,10 +133,38 @@ the checkout and out of Git. Windows account compromise still defeats this bound
 
 This initial transport runs on Windows and uses existing SSH access to Netcup. It
 requires that PC to remain connected; it is not an always-on server deployment.
-No startup task or permanent server service has been installed. The remote /tmp
-runtime must be replaced by a reviewed durable installation before relying on reboot
-persistence. deploy/codex-netcup-testing.toml is a tested example, not an installed
-global Codex configuration. Ordinary ChatGPT frontend tests are still pending.
+For reboot recovery, keep the server package and session store in durable paths, then
+install `deploy/gumacu-agy-mcp-readiness.service` as a systemd boot check. On Windows,
+run `deploy/install-private-tunnel-watchdog.ps1` as the same signed-in user that saved
+the DPAPI credential. It creates a limited interactive Scheduled Task that checks the
+tunnel at logon and every two minutes. It deliberately does not run as SYSTEM because
+the DPAPI secret is bound to the user's Windows identity. The watchdog restarts a
+stopped or unhealthy runtime through `start-private-tunnel.ps1`; it does not expose a
+public listener or put the runtime key on the command line.
+
+Example installation (replace values locally; never commit the tunnel ID or key):
+
+```powershell
+.\deploy\install-private-tunnel-watchdog.ps1 `
+  -RuntimeDirectory 'C:\private\gumacu-tunnel-runtime' `
+  -TunnelId 'tunnel_REPLACE_LOCALLY'
+```
+
+Install the Linux readiness check only after reviewing its paths and profile:
+
+```sh
+install -m 0644 deploy/gumacu-agy-mcp-readiness.service \
+  /etc/systemd/system/gumacu-agy-mcp-readiness.service
+systemctl daemon-reload
+systemctl enable --now gumacu-agy-mcp-readiness.service
+```
+
+The stdio MCP child remains connection-scoped and is launched through SSH by the
+Secure MCP Tunnel. The Linux unit verifies durable state, authentication and tool
+registration after boot; the Windows watchdog restores the actual tunnel channel.
+Immediately after a tunnel generation changes, the OpenAI control-plane channel may
+need a short registration interval even though local health already reports ready.
+deploy/codex-netcup-testing.toml remains an example, not a global Codex configuration.
 
 ## Controlled profile activation and live diagnostics
 
