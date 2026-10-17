@@ -641,7 +641,11 @@ def load_remote_jobs_as_records(db_path: Path | str | None = None) -> list[JobRe
                 if row["finished_at"] else None
             )
             title = row["antigravity_title"] or row["task_label"] or "Remote Antigravity Task"
-            title_source = row["title_source"] or ("antigravity" if row["antigravity_title"] else "antigravity_task")
+            raw_source = row["title_source"]
+            if raw_source in {"antigravity", "antigravity_task", "prompt_label", "pending"}:
+                title_source = raw_source
+            else:
+                title_source = "antigravity" if row["antigravity_title"] else "prompt_label"
             rec = JobRecord(
                 job_id=row["job_id"],
                 session_id=row["session_id"],
@@ -665,7 +669,8 @@ def load_remote_jobs_as_records(db_path: Path | str | None = None) -> list[JobRe
             )
             records.append(rec)
         return records
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to load remote jobs as records: %s", exc)
         return []
 
 

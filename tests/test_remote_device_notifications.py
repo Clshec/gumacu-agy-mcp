@@ -391,3 +391,57 @@ def test_load_remote_jobs_as_records_and_resolve(test_env):
     assert matched is not None
     assert matched.job_id == job_id
 
+
+def test_remote_telegram_bot_callbacks(test_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    broker, outbox, dispatcher = test_env
+    from agy_mcp.safety import SafetyPolicy
+    from agy_mcp.session_store import SessionStore
+    from agy_mcp.telegram_bot import TelegramBot
+
+    db_file = broker.conn.execute("PRAGMA database_list").fetchone()["file"]
+    monkeypatch.setenv("AGY_DEVICE_GATEWAY_DB", db_file)
+
+    ident = broker.submit("windows-main", "start", {"PROMPT": "Callback Test Task\nDetails", "SESSION_ID": "sess_cb_test"})
+    job_id = "job_r_" + ident[5:]
+    work = broker.poll("windows-main")
+    broker.finish("windows-main", ident, work["claim"], {
+        "success": True,
+        "job_id": job_id,
+        "status": "completed",
+        "antigravity_title": "Antigravity Callback Title",
+        "result_text": "Callback execution finished successfully",
+    })
+
+    store = SessionStore(tmp_path / "sessions")
+    safety = SafetyPolicy()
+    state_path = tmp_path / "telegram_state.json"
+    bot = TelegramBot(token="dummy", chat_id="902051097", store=store, supervisor=None, safety=safety, state_path=state_path)
+
+    sent = []
+    bot.send = lambda msg, buttons=None, menu=False: sent.append((msg, buttons))
+    ref = job_id[-12:]
+
+    # 1. Test status callback
+    cb_status = {"id": "1", "message": {"chat": {"id": 902051097}}, "data": f"status:{ref}"}
+    bot._handle_callback(cb_status)
+    assert len(sent) == 1
+    assert "windows-main" in sent[-1][0]
+    assert "Antigravity Callback Title" in sent[-1][0]
+    assert "completed" in sent[-1][0]
+    assert sent[-1][1] is not None  # has buttons
+
+    # 2. Test last reply callback
+    cb_last = {"id": "2", "message": {"chat": {"id": 902051097}}, "data": f"last:{ref}"}
+    bot._handle_callback(cb_last)
+    assert len(sent) == 2
+    assert "Callback execution finished successfully" in sent[-1][0]
+
+    # 3. Test use callback
+    cb_use = {"id": "3", "message": {"chat": {"id": 902051097}}, "data": f"use:{ref}"}
+    bot._handle_callback(cb_use)
+    assert len(sent) == 3
+    assert "windows-main" in sent[-1][0]
+    assert bot._state.get("active_device_id") == "windows-main"
+    assert bot._state.get("active_session_id") == "sess_cb_test"
+
+
