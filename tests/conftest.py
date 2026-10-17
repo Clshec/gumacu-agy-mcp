@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+# Prevent pytest-asyncio on Python 3.12 from implicitly creating an
+# unmanaged default event loop (and unclosed socketpair).
+asyncio.set_event_loop(None)
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Start the test runner without an implicit thread-local event loop."""
+    asyncio.set_event_loop(None)
 
 
 @pytest.fixture(autouse=True)
