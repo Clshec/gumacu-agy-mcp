@@ -816,7 +816,9 @@ def test_job_tools_exact_active_job_after_public_purge(cancel_workers, tool_name
     handles["b"].thread.join(timeout=5)
     adapter._events = []
     assert not handles["b"].thread.is_alive()
-    assert supervisor.status(job_b).status == "completed"
+    # B was explicitly cancelled to release the barrier adapter, so its
+    # terminal status must be cancelled even when a success event is scripted.
+    assert supervisor.status(job_b).status == "cancelled"
     assert supervisor.read_events(job_b)[0].text == "distinct B answer"
     original_b = (dir_b / "meta.json").read_bytes()
 
