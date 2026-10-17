@@ -843,4 +843,72 @@ class TelegramBot:
         )
 
 
-__all__ = ["TelegramBot", "job_title", "parse_command", "refresh_title", "resolve_job", "safe_progress"]
+def main() -> None:
+    import sys
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    for env_path in ("/etc/gumacu-agy-mcp/telegram.env", "/etc/gumacu-agy-devices/gateway.env"):
+        p = Path(env_path)
+        if p.is_file():
+            try:
+                for line in p.read_text(encoding="utf-8").splitlines():
+                    k, _, v = line.strip().partition("=")
+                    if k and not os.environ.get(k):
+                        os.environ[k] = v.strip("'\"")
+            except OSError:
+                pass
+
+    from agy_mcp.config import get_config
+    from agy_mcp.events import SubscriptionStore, WebhookDispatcher
+    from agy_mcp.notifications import NotificationDispatcher, NotificationOutbox
+    from agy_mcp.orchestrator import Orchestrator
+    from agy_mcp.safety import SafetyPolicy
+    from agy_mcp.session_store import SessionStore
+    from agy_mcp.supervisor import Supervisor
+
+    config = get_config()
+    safety = SafetyPolicy.from_config(config)
+    store = SessionStore(Path(config.session_store_root()).expanduser())
+    sub_path = store.root / "subscriptions.json"
+    subscription_store = SubscriptionStore(sub_path)
+    webhook_dispatcher = WebhookDispatcher(subscription_store)
+    outbox = NotificationOutbox(store.root / "notifications.json")
+    dispatcher = NotificationDispatcher(outbox)
+    supervisor = Supervisor(
+        store=store,
+        config=config,
+        safety=safety,
+        events_dispatcher=webhook_dispatcher,
+        notification_dispatcher=dispatcher,
+    )
+    orchestrator = Orchestrator(store=store, supervisor=supervisor)
+    supervisor.orchestrator = orchestrator
+
+    token = os.environ.get("AGY_MCP_TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("AGY_MCP_TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        logger.error("AGY_MCP_TELEGRAM_BOT_TOKEN and AGY_MCP_TELEGRAM_CHAT_ID must be set")
+        sys.exit(1)
+
+    state_path = store.root / "telegram_state.json"
+    bot = TelegramBot(
+        token=token,
+        chat_id=chat_id,
+        store=store,
+        supervisor=supervisor,
+        safety=safety,
+        state_path=state_path,
+    )
+    logger.info("Starting dedicated Telegram bot service for chat %s", chat_id)
+    bot.start()
+    try:
+        while not bot._stop.wait(1.0):
+            pass
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Stopping Telegram bot service...")
+        bot.stop()
+
+
+__all__ = ["TelegramBot", "job_title", "main", "parse_command", "refresh_title", "resolve_job", "safe_progress"]
+
+if __name__ == "__main__":
+    main()

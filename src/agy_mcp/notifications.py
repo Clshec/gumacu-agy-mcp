@@ -245,6 +245,8 @@ class NotificationDispatcher:
 
         if not self.telegram_configured or self.bot is not None:
             return
+        if os.environ.get("AGY_MCP_DISABLE_TELEGRAM_BOT") in {"1", "true", "True"}:
+            return
         state_path = self.outbox.path.with_name("telegram_state.json")
         self.bot = TelegramBot(
             token=self._token,
