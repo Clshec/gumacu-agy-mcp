@@ -84,7 +84,7 @@ def _mcp_fixture(tmp_path: Path, code: str) -> Path:
     # Overlay FastMCP while keeping the real SDK's mcp.types and
     # mcp.shared.exceptions visible. A fully shadowed mcp package breaks
     # imports before a test's deliberately injected FastMCP can be exercised.
-    namespace = "from pkgutil import extend_path\\n__path__ = extend_path(__path__, __name__)\\n"
+    namespace = "from pkgutil import extend_path\n__path__ = extend_path(__path__, __name__)\n"
     (server.parent / "__init__.py").write_text(namespace, encoding="utf-8")
     (server / "__init__.py").write_text(namespace, encoding="utf-8")
     (server / "fastmcp.py").write_text(code, encoding="utf-8")
