@@ -523,6 +523,42 @@ class SessionsToolResponse(_DictLikeEnvelope):
     records: list[JobRecord] = Field(default_factory=list)
 
 
+class NotificationsToolResponse(_DictLikeEnvelope):
+    """Envelope returned by ``agy_notifications``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    error: str | None = None
+    notifications: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+    next_cursor: int | None = None
+    has_more: bool = False
+    telegram_configured: bool = False
+
+
+class NotificationAckToolResponse(_DictLikeEnvelope):
+    """Envelope returned by ``agy_notification_ack``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    error: str | None = None
+    notification_id: str | None = None
+    acknowledged: bool = False
+
+
+class ActiveJobsToolResponse(_DictLikeEnvelope):
+    """Envelope returned by ``agy_active_jobs``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    error: str | None = None
+    jobs: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
 class DoctorToolResponse(_DictLikeEnvelope):
     """Envelope returned by ``agy_doctor``.
 
@@ -574,6 +610,7 @@ class PurgeToolResponse(_DictLikeEnvelope):
 
 __all__ = [
     "AdapterMetadata",
+    "ActiveJobsToolResponse",
     "BackendName",
     "BridgeRequest",
     "BridgeResponse",
@@ -585,6 +622,8 @@ __all__ = [
     "JobRecord",
     "JobStatus",
     "Mode",
+    "NotificationAckToolResponse",
+    "NotificationsToolResponse",
     "OutputProtocol",
     "PurgeToolResponse",
     "ReadToolResponse",

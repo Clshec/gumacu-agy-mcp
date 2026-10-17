@@ -179,9 +179,19 @@ Implemented per OpenAI MCP Events protocol specification (Protocol version `2026
    - When Antigravity completes a task, the bridge signs and delivers the webhook payload containing `job_id`, `session_id`, `status`, `finished_at`, `result_preview`, and `sha256`.
    - ChatGPT Work is notified immediately upon completion and continues turn execution within the same `SESSION_ID`.
 
-### Mode 2: ChatGPT Normal (العادي) — Terminal Live Monitoring (`agy-watch`)
+### Mode 2: ChatGPT Normal (العادي) — Durable notifications + Telegram
 
-Preserves the existing 6 controlled MCP tools without requiring external webhooks or background chat wakeups (which personal ChatGPT accounts do not support):
+Does not require MCP Events or a background chat webhook:
+1. Every terminal result is persisted in `notifications.json` before external delivery.
+2. `agy_notifications` and `agy_notification_ack` support quiet Scheduled Task polling.
+3. `agy_active_jobs` lets a user ask what Antigravity is currently doing without knowing a job id.
+4. Optional Telegram delivery is enabled with `AGY_MCP_TELEGRAM_BOT_TOKEN` and
+   `AGY_MCP_TELEGRAM_CHAT_ID`; quota exhaustion is sent explicitly.
+5. Telegram does not inject a message into an ordinary ChatGPT conversation. It is the
+   immediate notification channel; a Scheduled Task can bring the stored result back to a
+   chat when that task has access to the plugin.
+
+The existing terminal watcher remains available:
 1. **Interactive CLI Watcher (`agy-watch`)**:
    - Entry point: `agy-watch --latest` or `agy-watch --job <id>` (installed as console script via `pyproject.toml`).
    - `--wait-new`: Waits until a newly created job starts, ideal when starting monitoring before prompting ChatGPT.

@@ -114,7 +114,7 @@ MCP 工具是否齐、SKILL 落地路径、剩余可选项。
 > `agy --print`，可能消耗 Antigravity 请求额度。本项目只包装、路由、
 > 隔离、审计，不重新实现 `agy` API。
 
-## 11 个 MCP 工具
+## MCP 工具
 
 | 工具 | 用途 |
 |---|---|
@@ -129,6 +129,25 @@ MCP 工具是否齐、SKILL 落地路径、剩余可选项。
 | `agy_doctor` | 环境 + 鉴权 + capability 探测（不泄漏 secrets） |
 | `agy_install_skill` | 把 SKILL bundle 装到 Claude / Codex / Antigravity 目录 |
 | `agy_purge` | 清理本机 session-store 目录（refuse `days<=0`） |
+| `agy_notifications` | 读取持久化的未确认终态通知，供本地/定时 ChatGPT 任务使用 |
+| `agy_notification_ack` | 幂等确认通知已展示，防止重复提醒 |
+| `agy_active_jobs` | 无需 job id 列出正在运行任务及安全进度摘要 |
+
+## Telegram 与普通 ChatGPT 通知
+
+MCP 会把每个终态结果先写入 session root 下的 `notifications.json`，即使
+ChatGPT 没有 MCP Events 订阅或 Telegram 暂时不可用，结果也不会丢失。
+配置以下环境变量即可启用即时 Telegram 消息：
+
+```text
+AGY_MCP_TELEGRAM_BOT_TOKEN=<BotFather token>
+AGY_MCP_TELEGRAM_CHAT_ID=<numeric chat id>
+```
+
+不要把这些值写入仓库或聊天记录。重启 MCP 后，它会重试仍未发送的通知。
+普通/本地 ChatGPT 可用 Scheduled Task 定期调用 `agy_notifications`；当
+`count=0` 时保持静默，有通知时展示后调用 `agy_notification_ack`。Telegram
+负责即时提醒，Scheduled Task 负责把持久化结果带回支持该插件的聊天。
 
 ## 何时调用 / 何时不调用
 

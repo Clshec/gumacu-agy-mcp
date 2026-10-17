@@ -55,6 +55,7 @@ from agy_mcp.events import (
 )
 from agy_mcp.install import SkillScope, SkillTarget, install_skills
 from agy_mcp.models import (
+    ActiveJobsToolResponse,
     BackendName,
     BridgeRequest,
     BridgeResponse,
@@ -62,6 +63,8 @@ from agy_mcp.models import (
     DoctorToolResponse,
     InstallSkillToolResponse,
     Mode,
+    NotificationAckToolResponse,
+    NotificationsToolResponse,
     OutputProtocol,
     PurgeToolResponse,
     ReadToolResponse,
@@ -69,6 +72,7 @@ from agy_mcp.models import (
     SessionsToolResponse,
     StatusToolResponse,
 )
+from agy_mcp.notifications import NotificationDispatcher, NotificationOutbox
 from agy_mcp.orchestrator import Orchestrator
 from agy_mcp.remote_policy import restrict_request, restrict_tools
 from agy_mcp.safety import SafetyPolicy
@@ -88,6 +92,8 @@ _store: SessionStore | None = None
 _supervisor: Supervisor | None = None
 _subscription_store: SubscriptionStore | None = None
 _webhook_dispatcher: WebhookDispatcher | None = None
+_notification_outbox: NotificationOutbox | None = None
+_notification_dispatcher: NotificationDispatcher | None = None
 _orchestrator: Orchestrator | None = None
 _events_initialized: bool = False
 # Cached adapters for the doctor probe so we don't pay 4 subprocess calls
@@ -106,6 +112,7 @@ _gemini_adapter: GeminiCliBackend | None = None
 _MAX_JOB_ID_LEN = 84
 _JOB_ID_PATTERN = re.compile(r"^job_[A-Za-z0-9_-]{1,80}$")
 _JOB_ID_REFERENCE_PATTERN = _JOB_ID_PATTERN
+_NOTIFICATION_ID_PATTERN = re.compile(r"^note_[a-f0-9]{24}$")
 _RESULT_JOB_STATUSES = frozenset(
     {
         "completed",
@@ -155,7 +162,7 @@ _PURGE_MAX_DAYS = 365 * 10
 
 
 def _ensure_state() -> tuple[Config, SafetyPolicy, SessionStore, Supervisor]:
-    global _config, _safety, _store, _supervisor, _subscription_store, _webhook_dispatcher, _events_initialized, _orchestrator
+    global _config, _safety, _store, _supervisor, _subscription_store, _webhook_dispatcher, _notification_outbox, _notification_dispatcher, _events_initialized, _orchestrator
     with _state_lock:
         if _config is None:
             _config = get_config()
@@ -167,12 +174,16 @@ def _ensure_state() -> tuple[Config, SafetyPolicy, SessionStore, Supervisor]:
             sub_path = _store.root / "subscriptions.json"
             _subscription_store = SubscriptionStore(sub_path)
             _webhook_dispatcher = WebhookDispatcher(_subscription_store)
+        if _notification_outbox is None:
+            _notification_outbox = NotificationOutbox(_store.root / "notifications.json")
+            _notification_dispatcher = NotificationDispatcher(_notification_outbox)
         if _supervisor is None:
             _supervisor = Supervisor(
                 store=_store,
                 config=_config,
                 safety=_safety,
                 events_dispatcher=_webhook_dispatcher,
+                notification_dispatcher=_notification_dispatcher,
             )
         if _orchestrator is None:
             _orchestrator = Orchestrator(store=_store, supervisor=_supervisor)
@@ -257,7 +268,7 @@ def _reset_state_for_tests() -> None:
     module-level globals — keep it that way (Phase 5 R2 P3.7).
     """
 
-    global _config, _safety, _store, _supervisor, _agy_adapter, _gemini_adapter, _subscription_store, _webhook_dispatcher, _events_initialized, _orchestrator
+    global _config, _safety, _store, _supervisor, _agy_adapter, _gemini_adapter, _subscription_store, _webhook_dispatcher, _notification_outbox, _notification_dispatcher, _events_initialized, _orchestrator
     with _state_lock:
         if _orchestrator is not None:
             _orchestrator.stop_worker()
@@ -270,6 +281,8 @@ def _reset_state_for_tests() -> None:
         _gemini_adapter = None
         _subscription_store = None
         _webhook_dispatcher = None
+        _notification_outbox = None
+        _notification_dispatcher = None
         _events_initialized = False
     with _bridge_limiter_lock:
         _bridge_limiters_by_loop.clear()
@@ -294,7 +307,9 @@ try:
             "then ``agy_result`` after completion. Use ``agy`` only for quick one-shot "
             "prompts. Never promise automatic resume unless an event subscription "
             "was actually created; agy_start warnings and agy_status.progress report "
-            "subscription availability. Use "
+            "subscription availability. Local and scheduled chats should use "
+            "agy_notifications plus agy_notification_ack; Telegram delivery is "
+            "independent of chat wake-up. Use "
             "``agy_doctor`` to check the environment."
         ),
     )
@@ -311,7 +326,9 @@ except TypeError:
             "then ``agy_result`` after completion. Use ``agy`` only for quick one-shot "
             "prompts. Never promise automatic resume unless an event subscription "
             "was actually created; agy_start warnings and agy_status.progress report "
-            "subscription availability. Use "
+            "subscription availability. Local and scheduled chats should use "
+            "agy_notifications plus agy_notification_ack; Telegram delivery is "
+            "independent of chat wake-up. Use "
             "``agy_doctor`` to check the environment."
         ),
     )
@@ -755,10 +772,18 @@ def agy_start_tool(
         return _structured_failure(safety, exc, cwd=effective_cwd)
     subscription_count = len(_subscription_store.list_all()) if _subscription_store else 0
     if subscription_count == 0:
+        telegram_ready = bool(
+            _notification_dispatcher and _notification_dispatcher.telegram_configured
+        )
         response.warnings.append(
             "No active MCP event subscription exists. This job cannot automatically "
             "resume ChatGPT; use agy_status manually or subscribe from an eligible "
-            "ChatGPT Work/Cloud chat before promising automatic notification."
+            "ChatGPT Work/Cloud chat before promising automatic notification. "
+            + (
+                "Telegram terminal notifications are configured."
+                if telegram_ready
+                else "Telegram terminal notifications are not configured."
+            )
         )
     return response
 
@@ -1146,6 +1171,106 @@ def agy_sessions_tool(limit: int = 50) -> SessionsToolResponse:
 
 
 # ---------------------------------------------------------------------------
+# Tools: durable notifications for local/ordinary ChatGPT automations
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    name="agy_notifications",
+    description=(
+        "List pending terminal Antigravity notifications from the durable outbox. "
+        "Scheduled tasks should stay silent when count is zero, report each returned "
+        "notification, then acknowledge it with agy_notification_ack."
+    ),
+)
+def agy_notifications_tool(cursor: int = 0, limit: int = 20) -> NotificationsToolResponse:
+    _config_, safety, _store_, _supervisor_ = _ensure_state()
+    assert _notification_outbox is not None
+    assert _notification_dispatcher is not None
+    try:
+        page = _notification_outbox.list_pending(cursor=cursor, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        return _wrapper_failure(safety, exc, NotificationsToolResponse)
+    return NotificationsToolResponse(
+        success=True,
+        notifications=page["notifications"],
+        count=page["count"],
+        next_cursor=page["next_cursor"],
+        has_more=page["has_more"],
+        telegram_configured=_notification_dispatcher.telegram_configured,
+    )
+
+
+@mcp.tool(
+    name="agy_notification_ack",
+    description=(
+        "Acknowledge a durable Antigravity notification after it has been shown to "
+        "the user. Repeated acknowledgement is safe and idempotent."
+    ),
+)
+def agy_notification_ack_tool(notification_id: str) -> NotificationAckToolResponse:
+    _config_, safety, _store_, _supervisor_ = _ensure_state()
+    assert _notification_outbox is not None
+    if not _NOTIFICATION_ID_PATTERN.fullmatch(notification_id):
+        return _wrapper_failure(
+            safety, ValueError("invalid notification_id"), NotificationAckToolResponse,
+        )
+    try:
+        item = _notification_outbox.acknowledge(notification_id)
+    except Exception as exc:  # noqa: BLE001
+        return _wrapper_failure(safety, exc, NotificationAckToolResponse)
+    if item is None:
+        return _wrapper_failure(
+            safety, ValueError("notification_id not found"), NotificationAckToolResponse,
+            notification_id=notification_id,
+        )
+    return NotificationAckToolResponse(
+        success=True,
+        notification_id=notification_id,
+        acknowledged=True,
+    )
+
+
+@mcp.tool(
+    name="agy_active_jobs",
+    description=(
+        "List running Antigravity jobs with bounded, safe operational progress. "
+        "Use this when the user asks what Antigravity is doing but has no job id."
+    ),
+)
+def agy_active_jobs_tool(limit: int = 20) -> ActiveJobsToolResponse:
+    _config_, safety, _store_, supervisor = _ensure_state()
+    if not 1 <= limit <= 100:
+        return _wrapper_failure(
+            safety, ValueError("limit must be between 1 and 100"), ActiveJobsToolResponse,
+        )
+    try:
+        active = [item for item in supervisor.list_sessions(limit=None) if item.status == "running"]
+        active = active[:limit]
+        subscription_count = len(_subscription_store.list_all()) if _subscription_store else 0
+        jobs = []
+        for record in active:
+            try:
+                events = supervisor.read_events(record.job_id)
+            except Exception:  # noqa: BLE001
+                events = []
+            jobs.append(
+                {
+                    "record": record.model_dump(mode="json"),
+                    "progress": _build_progress_summary(
+                        record,
+                        events,
+                        safety,
+                        event_subscription_count=subscription_count,
+                    ),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        return _wrapper_failure(safety, exc, ActiveJobsToolResponse)
+    return ActiveJobsToolResponse(success=True, jobs=jobs, count=len(jobs))
+
+
+# ---------------------------------------------------------------------------
 # Tool: agy_doctor — environment probe
 # ---------------------------------------------------------------------------
 
@@ -1485,10 +1610,13 @@ def run(transport: str = "stdio", port: int = 8765) -> None:
 
 
 __all__ = [
+    "agy_active_jobs_tool",
     "agy_cancel_tool",
     "agy_continue_tool",
     "agy_doctor_tool",
     "agy_install_skill_tool",
+    "agy_notification_ack_tool",
+    "agy_notifications_tool",
     "agy_pipeline_cancel",
     "agy_pipeline_start",
     "agy_pipeline_status",

@@ -1,0 +1,287 @@
+"""Durable job notifications and optional Telegram delivery.
+
+This module is deliberately independent from MCP Events.  Local ChatGPT and
+scheduled tasks can consume the durable outbox through MCP tools, while a
+Telegram bot can deliver terminal outcomes immediately.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import html
+import json
+import logging
+import os
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from agy_mcp.models import JobRecord
+from agy_mcp.utils import ensure_directory, safe_write_text, utc_now_iso
+
+logger = logging.getLogger(__name__)
+
+TELEGRAM_TOKEN_ENV = "AGY_MCP_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID_ENV = "AGY_MCP_TELEGRAM_CHAT_ID"
+TERMINAL_STATUSES = frozenset(
+    {
+        "completed",
+        "failed",
+        "cancelled",
+        "upstream_error",
+        "quota_exhausted",
+        "timeout",
+        "no_final_response",
+    }
+)
+
+
+class NotificationOutbox:
+    """Thread-safe JSON outbox with stable IDs and idempotent acknowledgement."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._lock = threading.RLock()
+        ensure_directory(self.path.parent, mode=0o700)
+        self._records: dict[str, dict[str, Any]] = {}
+        self._load()
+
+    @staticmethod
+    def notification_id(job_id: str, status: str) -> str:
+        digest = hashlib.sha256(f"{job_id}\0{status}".encode()).hexdigest()[:24]
+        return f"note_{digest}"
+
+    def _load(self) -> None:
+        if not self.path.is_file():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict) and isinstance(item.get("id"), str):
+                        self._records[item["id"]] = item
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Failed to load notification outbox: %s", exc)
+
+    def _save(self) -> None:
+        ordered = sorted(self._records.values(), key=lambda item: item["created_at"])
+        safe_write_text(self.path, json.dumps(ordered, ensure_ascii=False, indent=2))
+
+    def record(
+        self,
+        record: JobRecord,
+        *,
+        summary: str,
+        reason_code: str | None = None,
+    ) -> dict[str, Any]:
+        if record.status not in TERMINAL_STATUSES:
+            raise ValueError("notification requires a terminal job status")
+        note_id = self.notification_id(record.job_id, record.status)
+        with self._lock:
+            existing = self._records.get(note_id)
+            if existing is not None:
+                return dict(existing)
+            now = utc_now_iso()
+            item = {
+                "id": note_id,
+                "job_id": record.job_id,
+                "session_id": record.session_id,
+                "status": record.status,
+                "reason_code": reason_code or record.status,
+                "summary": summary[:1000],
+                "created_at": record.finished_at or now,
+                "acknowledged_at": None,
+                "telegram": {
+                    "configured": False,
+                    "delivered": False,
+                    "delivered_at": None,
+                    "attempts": 0,
+                    "last_error": None,
+                },
+            }
+            self._records[note_id] = item
+            self._save()
+            return dict(item)
+
+    def list_pending(self, *, cursor: int = 0, limit: int = 20) -> dict[str, Any]:
+        if cursor < 0 or not 1 <= limit <= 100:
+            raise ValueError("cursor must be non-negative and limit must be between 1 and 100")
+        with self._lock:
+            pending = sorted(
+                (item for item in self._records.values() if not item.get("acknowledged_at")),
+                key=lambda item: item["created_at"],
+            )
+            page = pending[cursor : cursor + limit]
+            next_cursor = cursor + len(page)
+            return {
+                "notifications": [dict(item) for item in page],
+                "count": len(page),
+                "next_cursor": next_cursor if next_cursor < len(pending) else None,
+                "has_more": next_cursor < len(pending),
+            }
+
+    def acknowledge(self, notification_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            item = self._records.get(notification_id)
+            if item is None:
+                return None
+            if not item.get("acknowledged_at"):
+                item["acknowledged_at"] = utc_now_iso()
+                self._save()
+            return dict(item)
+
+    def update_telegram(
+        self,
+        notification_id: str,
+        *,
+        configured: bool,
+        delivered: bool,
+        attempts: int,
+        error: str | None,
+    ) -> None:
+        with self._lock:
+            item = self._records.get(notification_id)
+            if item is None:
+                return
+            item["telegram"] = {
+                "configured": configured,
+                "delivered": delivered,
+                "delivered_at": utc_now_iso() if delivered else None,
+                "attempts": attempts,
+                "last_error": error[:240] if error else None,
+            }
+            self._save()
+
+
+class NotificationDispatcher:
+    """Persist every terminal result and optionally deliver it to Telegram."""
+
+    def __init__(
+        self,
+        outbox: NotificationOutbox,
+        *,
+        token: str | None = None,
+        chat_id: str | None = None,
+        timeout_seconds: float = 10.0,
+        retry_delays: tuple[float, ...] = (0.0, 1.0, 3.0),
+    ) -> None:
+        self.outbox = outbox
+        self._token = token if token is not None else os.environ.get(TELEGRAM_TOKEN_ENV, "")
+        self._chat_id = chat_id if chat_id is not None else os.environ.get(TELEGRAM_CHAT_ID_ENV, "")
+        self.timeout_seconds = timeout_seconds
+        self.retry_delays = retry_delays
+        if self.telegram_configured:
+            self.replay_pending_telegram()
+
+    @property
+    def telegram_configured(self) -> bool:
+        return bool(self._token.strip() and self._chat_id.strip())
+
+    def readiness(self) -> dict[str, Any]:
+        return {
+            "telegram_configured": self.telegram_configured,
+            "notification_outbox": str(self.outbox.path.name),
+        }
+
+    def notify_job(
+        self,
+        record: JobRecord,
+        *,
+        summary: str,
+        reason_code: str | None = None,
+    ) -> dict[str, Any] | None:
+        if record.status not in TERMINAL_STATUSES:
+            return None
+        item = self.outbox.record(record, summary=summary, reason_code=reason_code)
+        if item.get("telegram", {}).get("delivered"):
+            return item
+        if not self.telegram_configured:
+            self.outbox.update_telegram(
+                item["id"], configured=False, delivered=False, attempts=0, error=None,
+            )
+            return item
+        thread = threading.Thread(
+            target=self._deliver_telegram,
+            args=(item,),
+            name=f"agy-telegram-{record.job_id[-12:]}",
+            daemon=True,
+        )
+        thread.start()
+        return item
+
+    def replay_pending_telegram(self) -> None:
+        """Retry undelivered durable notifications after a process restart."""
+
+        cursor = 0
+        while True:
+            page = self.outbox.list_pending(cursor=cursor, limit=100)
+            for item in page["notifications"]:
+                if item.get("telegram", {}).get("delivered"):
+                    continue
+                thread = threading.Thread(
+                    target=self._deliver_telegram,
+                    args=(item,),
+                    name=f"agy-telegram-replay-{item['id'][-8:]}",
+                    daemon=True,
+                )
+                thread.start()
+            if page["next_cursor"] is None:
+                break
+            cursor = page["next_cursor"]
+
+    def _message(self, item: dict[str, Any]) -> str:
+        status = str(item["status"])
+        icon = "✅" if status == "completed" else "⛔" if status == "quota_exhausted" else "⚠️"
+        return (
+            f"{icon} <b>Antigravity: {html.escape(status)}</b>\n"
+            f"Job: <code>{html.escape(str(item['job_id']))}</code>\n"
+            f"Reason: <code>{html.escape(str(item['reason_code']))}</code>\n"
+            f"{html.escape(str(item['summary']))}"
+        )
+
+    def _deliver_telegram(self, item: dict[str, Any]) -> None:
+        url = f"https://api.telegram.org/bot{self._token}/sendMessage"
+        error: str | None = None
+        attempts = 0
+        for delay in self.retry_delays:
+            if delay:
+                time.sleep(delay)
+            attempts += 1
+            try:
+                response = httpx.post(
+                    url,
+                    json={
+                        "chat_id": self._chat_id,
+                        "text": self._message(item),
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": True,
+                    },
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not payload.get("ok"):
+                    raise RuntimeError("Telegram API rejected the notification")
+            except Exception as exc:  # noqa: BLE001 - delivery must not affect job finalization
+                error = type(exc).__name__
+                continue
+            self.outbox.update_telegram(
+                item["id"], configured=True, delivered=True, attempts=attempts, error=None,
+            )
+            return
+        logger.warning("Telegram delivery failed for notification %s", item["id"])
+        self.outbox.update_telegram(
+            item["id"], configured=True, delivered=False, attempts=attempts, error=error,
+        )
+
+
+__all__ = [
+    "NotificationDispatcher",
+    "NotificationOutbox",
+    "TELEGRAM_CHAT_ID_ENV",
+    "TELEGRAM_TOKEN_ENV",
+    "TERMINAL_STATUSES",
+]

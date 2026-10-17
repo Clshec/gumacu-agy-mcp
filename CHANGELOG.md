@@ -8,6 +8,12 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add a durable terminal-notification outbox with idempotent acknowledgement,
+  active-job progress discovery, and restart-safe delivery state for local and
+  scheduled ChatGPT workflows.
+- Add optional Telegram Bot API delivery for success, failure, cancellation,
+  timeout, upstream errors, missing final responses, and explicit quota
+  exhaustion. Credentials are accepted only through environment variables.
 - Report event-subscription availability in every live progress response and
   warn at job start when no subscription exists, so clients cannot mistake
   server event support for a verified automatic-resume path.

@@ -7,7 +7,11 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-READ_TOOLS = frozenset({"agy_status", "agy_read", "agy_result_page", "agy_sessions", "agy_pipeline_status"})
+READ_TOOLS = frozenset({
+    "agy_status", "agy_read", "agy_result_page", "agy_sessions",
+    "agy_pipeline_status", "agy_notifications", "agy_notification_ack",
+    "agy_active_jobs",
+})
 CONTROLLED_TOOLS = READ_TOOLS | {"agy_start", "agy_cancel", "agy_pipeline_start", "agy_pipeline_cancel"}
 OPERATOR_TOOLS = CONTROLLED_TOOLS | {"agy", "agy_continue", "agy_result", "agy_doctor"}
 VALID_PROFILES = frozenset({"local", "read-only", "controlled", "controlled-write", "operator"})

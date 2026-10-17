@@ -210,11 +210,8 @@ def _wait_until(predicate, *, timeout: float = 3.0) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def test_eleven_tools_registered():
-    """The documented agy tool set must all live on the FastMCP instance.
-
-    The metadata surface currently includes ``agy_result`` as the eleventh tool.
-    """
+def test_tools_registered():
+    """The documented agy tool set must all live on the FastMCP instance."""
 
     expected = {
         "agy",
@@ -229,8 +226,49 @@ def test_eleven_tools_registered():
         "agy_doctor",
         "agy_install_skill",
         "agy_purge",
+        "agy_active_jobs",
+        "agy_notifications",
+        "agy_notification_ack",
+        "agy_pipeline_start",
+        "agy_pipeline_status",
+        "agy_pipeline_cancel",
     }
     assert expected == set(server.mcp._tool_manager._tools.keys())
+
+
+def test_notification_tools_pull_ack_and_report_readiness(reset_state):
+    server._ensure_state()
+    record = reset_state.store.create_job(
+        job_id="job_notification_tools_123",
+        cwd=str(reset_state.store.root),
+        request=BridgeRequest(
+            prompt="notify me", cwd=str(reset_state.store.root),
+        ).model_dump(mode="json"),
+    )
+    record.status = "quota_exhausted"
+    record.finished_at = "2026-10-17T08:01:00Z"
+    record.error = "quota exhausted"
+    reset_state.store.update_job(record)
+    item = server._notification_outbox.record(
+        record, summary="Antigravity quota is exhausted", reason_code="quota_exhausted",
+    )
+
+    page = server.agy_notifications_tool()
+    assert page.success is True
+    assert page.telegram_configured is False
+    assert page.notifications[0]["reason_code"] == "quota_exhausted"
+
+    ack = server.agy_notification_ack_tool(item["id"])
+    assert ack.success is True and ack.acknowledged is True
+    assert server.agy_notification_ack_tool(item["id"]).success is True
+    assert server.agy_notifications_tool().count == 0
+
+
+def test_active_jobs_empty_is_a_success(reset_state):
+    response = server.agy_active_jobs_tool()
+    assert response.success is True
+    assert response.count == 0
+    assert response.jobs == []
 
 
 def test_tool_descriptions_present():

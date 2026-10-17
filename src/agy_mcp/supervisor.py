@@ -165,6 +165,7 @@ class Supervisor:
         adapter_factory: AdapterFactory | None = None,
         max_concurrent_jobs: int = 8,
         events_dispatcher: Any | None = None,
+        notification_dispatcher: Any | None = None,
         orchestrator: Any | None = None,
     ) -> None:
         self.store = store
@@ -174,6 +175,7 @@ class Supervisor:
         # supervisor and the synchronous path stay in lockstep.
         self._adapter_factory = adapter_factory or self._default_adapter_factory
         self._events_dispatcher = events_dispatcher
+        self._notification_dispatcher = notification_dispatcher
         self._orchestrator = orchestrator
         self._jobs: dict[str, _JobHandle] = {}
         self._starting_jobs: set[str] = set()
@@ -857,22 +859,23 @@ class Supervisor:
         if route_warnings:
             record.extra.setdefault("route_warnings", list(route_warnings))
         self.store.update_job(record)
+        preview = ""
+        if result is not None and getattr(result, "events", None):
+            for ev in reversed(result.events):
+                if getattr(ev, "type", None) in {"assistant", "result"} and getattr(ev, "text", None):
+                    preview = ev.text
+                    break
+        if not preview and result is not None and getattr(result, "output", None):
+            preview = result.output
+        if not preview:
+            try:
+                paths = self.store.paths(record.job_id)
+                if paths.stdout.is_file():
+                    preview = paths.stdout.read_text(encoding="utf-8")[:1000]
+            except Exception:
+                pass
+
         if self._events_dispatcher is not None:
-            preview = ""
-            if result is not None and getattr(result, "events", None):
-                for ev in reversed(result.events):
-                    if getattr(ev, "type", None) in {"assistant", "result"} and getattr(ev, "text", None):
-                        preview = ev.text
-                        break
-            if not preview and result is not None and getattr(result, "output", None):
-                preview = result.output
-            if not preview:
-                try:
-                    paths = self.store.paths(record.job_id)
-                    if paths.stdout.is_file():
-                        preview = paths.stdout.read_text(encoding="utf-8")[:1000]
-                except Exception:
-                    pass
 
             sha256 = ""
             total_chars = len(preview)
@@ -897,6 +900,28 @@ class Supervisor:
                 )
             except Exception as ex:
                 logger.warning("Error dispatching job event: %s", ex)
+
+        if self._notification_dispatcher is not None:
+            if record.status == "completed":
+                summary = preview or "Antigravity completed the task successfully."
+            elif record.status == "quota_exhausted":
+                summary = record.error or "Antigravity stopped because its quota is exhausted."
+            elif record.status == "cancelled":
+                summary = "The Antigravity task was cancelled."
+            else:
+                summary = record.error or f"Antigravity finished with status {record.status}."
+            try:
+                self._notification_dispatcher.notify_job(
+                    record,
+                    summary=self.safety.redact(summary)[:1000],
+                    reason_code=(
+                        "quota_exhausted"
+                        if record.status == "quota_exhausted"
+                        else record.status
+                    ),
+                )
+            except Exception as ex:
+                logger.warning("Error recording job notification: %s", ex)
 
         if self._orchestrator is not None:
             try:
