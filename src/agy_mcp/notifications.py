@@ -265,22 +265,25 @@ class NotificationDispatcher:
     def replay_pending_telegram(self) -> None:
         """Retry undelivered durable notifications after a process restart."""
 
+        # Snapshot all pending deliveries before starting workers. Otherwise a
+        # fast worker can shrink a filtered page between cursor reads and cause
+        # later notifications to be skipped.
+        pending: list[dict[str, Any]] = []
         cursor = 0
         while True:
             page = self.outbox.list_telegram_undelivered(cursor=cursor, limit=100)
-            for item in page["notifications"]:
-                if item.get("telegram", {}).get("delivered"):
-                    continue
-                thread = threading.Thread(
-                    target=self._deliver_telegram,
-                    args=(item,),
-                    name=f"agy-telegram-replay-{item['id'][-8:]}",
-                    daemon=True,
-                )
-                thread.start()
+            pending.extend(page["notifications"])
             if page["next_cursor"] is None:
                 break
             cursor = page["next_cursor"]
+        for item in pending:
+            thread = threading.Thread(
+                target=self._deliver_telegram,
+                args=(item,),
+                name=f"agy-telegram-replay-{item['id'][-8:]}",
+                daemon=True,
+            )
+            thread.start()
 
     def _message(self, item: dict[str, Any]) -> str:
         status = str(item["status"])
