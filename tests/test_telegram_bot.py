@@ -292,3 +292,25 @@ def test_new_session_keeps_its_own_independent_title(tmp_path: Path, monkeypatch
         "conv-1": "Gumacu MCP integration",
         "conv-2": "Separate Odoo project",
     }
+
+
+def test_terminal_notification_preserves_original_title(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "agy_mcp.telegram_bot.conversation_title",
+        lambda session_id: "A newly suggested task name",
+    )
+    original = record("job_original", "Gumacu MCP integration")
+    original.status = "completed"
+    followup = record("job_followup", "Another unrelated instruction")
+    followup.status = "completed"
+    store = FakeStore([followup, original])
+    bot = make_bot(tmp_path, store)
+
+    assert bot._inherit_conversation_title(original).antigravity_title == (
+        "Gumacu MCP integration"
+    )
+    terminal = bot.terminal_message(followup, "")
+
+    assert "Gumacu MCP integration" in terminal
+    assert "Another unrelated instruction" not in terminal
+    assert "A newly suggested task name" not in terminal
