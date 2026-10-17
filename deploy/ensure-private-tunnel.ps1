@@ -2,11 +2,16 @@ param(
     [Parameter(Mandatory=$true)][string]$RuntimeDirectory,
     [Parameter(Mandatory=$true)][string]$TunnelId,
     [string]$Alias = 'gumacu-netcup',
-    [string]$StarterScript = (Join-Path $PSScriptRoot 'start-private-tunnel.ps1')
+    [string]$StarterScript = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $runtime = [IO.Path]::GetFullPath($RuntimeDirectory)
+$StarterScript = if ([string]::IsNullOrWhiteSpace($StarterScript)) {
+    Join-Path $runtime 'start-private-tunnel.ps1'
+} else {
+    [IO.Path]::GetFullPath($StarterScript)
+}
 $client = Join-Path $runtime 'bin\tunnel-client.exe'
 $logDirectory = Join-Path $runtime 'watchdog'
 $logFile = Join-Path $logDirectory 'watchdog.log'
