@@ -21,7 +21,7 @@ def gateway_call(path: str, payload: dict[str, Any] | None = None) -> dict[str, 
     if not url:
         url = "http://127.0.0.1:8766"
     token = os.environ.get("AGY_DEVICE_ADMIN_TOKEN", "")
-    if not token:
+    if len(token) < 32:
         env_file = Path("/etc/gumacu-agy-devices/gateway.env")
         if env_file.is_file():
             try:
