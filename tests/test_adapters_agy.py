@@ -7,6 +7,7 @@ the slice of surface AgyPrintBackend cares about. We bind them via
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -921,3 +922,129 @@ def test_drain_transcript_refuses_symlink_open(tmp_path):
     ctx = _new_ctx()
     _drain_transcript(link, ctx, backend)
     assert ctx.events == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn transcript recovery & anti-stale response regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_transcript_recovery_does_not_bleed_across_turns(tmp_path, monkeypatch):
+    """When Turn 2 has USER_INPUT but no PLANNER_RESPONSE yet, it must return None,
+    never bleeding backwards into Turn 1's PLANNER_RESPONSE."""
+    from agy_mcp.adapters.agy import recover_assistant_text_from_transcript
+
+    session_id = "test-session-no-bleed-1234"
+    brain_dir = tmp_path / "brain"
+    logs_dir = brain_dir / session_id / ".system_generated" / "logs"
+    logs_dir.mkdir(parents=True)
+    monkeypatch.setenv("ANTIGRAVITY_BRAIN_DIR", str(brain_dir))
+
+    transcript_file = logs_dir / "transcript.jsonl"
+    lines = [
+        json.dumps({"step_index": 0, "type": "USER_INPUT", "content": "Turn 1 Prompt", "created_at": "2026-10-17T12:00:00Z"}),
+        json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "content": "Turn 1 Answer", "created_at": "2026-10-17T12:00:05Z"}),
+        json.dumps({"step_index": 2, "type": "USER_INPUT", "content": "Turn 2 Prompt", "created_at": "2026-10-17T12:01:00Z"}),
+    ]
+    transcript_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Asking for Turn 2 prompt must return None, NOT "Turn 1 Answer"
+    recovered = recover_assistant_text_from_transcript(
+        session_id, expected_prompt="Turn 2 Prompt",
+    )
+    assert recovered is None
+
+    # Even with expected_prompt=None, because USER_INPUT is at the tail, no response exists for this turn
+    recovered_unspecified = recover_assistant_text_from_transcript(session_id)
+    assert recovered_unspecified is None
+
+
+def test_transcript_recovery_correlates_turn_and_prompt(tmp_path, monkeypatch):
+    """Multi-turn recovery must strictly correlate with the expected prompt."""
+    from agy_mcp.adapters.agy import recover_assistant_text_from_transcript
+
+    session_id = "test-session-correlate-5678"
+    brain_dir = tmp_path / "brain"
+    logs_dir = brain_dir / session_id / ".system_generated" / "logs"
+    logs_dir.mkdir(parents=True)
+    monkeypatch.setenv("ANTIGRAVITY_BRAIN_DIR", str(brain_dir))
+
+    transcript_file = logs_dir / "transcript.jsonl"
+    lines = [
+        json.dumps({"step_index": 0, "type": "USER_INPUT", "content": "<USER_REQUEST>\nNONCE_FIRST_111\n</USER_REQUEST>", "created_at": "2026-10-17T12:00:00Z"}),
+        json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "content": "FIRST_ANSWER_111", "created_at": "2026-10-17T12:00:05Z"}),
+        json.dumps({"step_index": 2, "type": "USER_INPUT", "content": "<USER_REQUEST>\nNONCE_SECOND_222\n</USER_REQUEST>", "created_at": "2026-10-17T12:01:00Z"}),
+        json.dumps({"step_index": 3, "type": "PLANNER_RESPONSE", "content": "SECOND_ANSWER_222", "created_at": "2026-10-17T12:01:05Z"}),
+    ]
+    transcript_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Prompt matching Turn 2 returns Turn 2 answer
+    recovered_turn2 = recover_assistant_text_from_transcript(
+        session_id, expected_prompt="NONCE_SECOND_222",
+    )
+    assert recovered_turn2 == "SECOND_ANSWER_222"
+
+    # Querying with Turn 3 prompt (not yet present) returns None, never Turn 2 or Turn 1 answer
+    recovered_turn3 = recover_assistant_text_from_transcript(
+        session_id, expected_prompt="NONCE_THIRD_333",
+    )
+    assert recovered_turn3 is None
+
+
+def test_transcript_recovery_polls_for_delayed_flush(tmp_path, monkeypatch):
+    """If transcript.jsonl flushes shortly after process termination, polling recovers it."""
+    from agy_mcp.adapters.agy import recover_assistant_text_from_transcript
+
+    session_id = "test-session-delayed-9999"
+    brain_dir = tmp_path / "brain"
+    logs_dir = brain_dir / session_id / ".system_generated" / "logs"
+    logs_dir.mkdir(parents=True)
+    monkeypatch.setenv("ANTIGRAVITY_BRAIN_DIR", str(brain_dir))
+
+    transcript_file = logs_dir / "transcript.jsonl"
+
+    def delayed_writer():
+        time.sleep(0.15)
+        lines = [
+            json.dumps({"step_index": 0, "type": "USER_INPUT", "content": "DELAYED_PROMPT", "created_at": "2026-10-17T12:00:00Z"}),
+            json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "content": "DELAYED_RESULT", "created_at": "2026-10-17T12:00:05Z"}),
+        ]
+        transcript_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    writer = threading.Thread(target=delayed_writer)
+    writer.start()
+
+    # Immediate check (poll_timeout=0) should fail because file does not exist yet
+    assert recover_assistant_text_from_transcript(session_id, expected_prompt="DELAYED_PROMPT", poll_timeout=0.0) is None
+
+    # Polled check (poll_timeout=1.0) waits for the write to finish
+    recovered = recover_assistant_text_from_transcript(
+        session_id, expected_prompt="DELAYED_PROMPT", poll_timeout=1.0, poll_interval=0.05,
+    )
+    writer.join(timeout=2)
+    assert recovered == "DELAYED_RESULT"
+
+
+def test_transcript_recovery_rejects_stale_timestamp(tmp_path, monkeypatch):
+    """If transcript entry is older than min_timestamp, it must be rejected as stale."""
+    from agy_mcp.adapters.agy import recover_assistant_text_from_transcript
+
+    session_id = "test-session-stale-ts"
+    brain_dir = tmp_path / "brain"
+    logs_dir = brain_dir / session_id / ".system_generated" / "logs"
+    logs_dir.mkdir(parents=True)
+    monkeypatch.setenv("ANTIGRAVITY_BRAIN_DIR", str(brain_dir))
+
+    transcript_file = logs_dir / "transcript.jsonl"
+    lines = [
+        json.dumps({"step_index": 0, "type": "USER_INPUT", "content": "OLD_PROMPT", "created_at": "2026-10-17T10:00:00Z"}),
+        json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "content": "OLD_RESULT", "created_at": "2026-10-17T10:00:05Z"}),
+    ]
+    transcript_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Job started at 12:00:00 UTC (timestamp around 1792238400)
+    job_start = 1792238400.0
+    recovered = recover_assistant_text_from_transcript(
+        session_id, min_timestamp=job_start,
+    )
+    assert recovered is None

@@ -17,6 +17,7 @@ Strategy (see docs/output-strategy.md for the full rationale):
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import os
 import re
@@ -551,10 +552,25 @@ class AgyPrintBackend(BaseAdapter):
         recovered_from_transcript = False
 
         if not stdout_text.strip():
-            recovered = recover_assistant_text_from_transcript(session_id)
-            if recovered:
-                stdout_text = recovered
-                recovered_from_transcript = True
+            if not session_id and exit_code == 0:
+                wait_until = time.time() + 1.5
+                while time.time() < wait_until:
+                    with ctx.lock:
+                        session_id = ctx.seen_session_id[0]
+                    if session_id:
+                        break
+                    time.sleep(0.1)
+
+            if session_id:
+                recovered = recover_assistant_text_from_transcript(
+                    session_id,
+                    expected_prompt=request.prompt,
+                    min_timestamp=start,
+                    poll_timeout=3.0 if exit_code == 0 else 0.5,
+                )
+                if recovered:
+                    stdout_text = recovered
+                    recovered_from_transcript = True
 
         # Some agy releases print quota failures to stderr/stdout without
         # writing the same line to klog. Classify that evidence before deciding
@@ -1113,11 +1129,28 @@ def _open_transcript_no_follow(path: Path):
         raise
 
 
-def recover_assistant_text_from_transcript(session_id: str | None) -> str | None:
+def _parse_iso_ts(ts_str: str) -> float | None:
+    try:
+        clean = ts_str.strip()
+        if clean.endswith("Z"):
+            clean = clean[:-1] + "+00:00"
+        return datetime.fromisoformat(clean).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def recover_assistant_text_from_transcript(
+    session_id: str | None,
+    *,
+    expected_prompt: str | None = None,
+    min_timestamp: float | None = None,
+    poll_timeout: float = 0.0,
+    poll_interval: float = 0.1,
+) -> str | None:
     """Best-effort recovery of the latest model response from session transcript.
 
     Used when Antigravity CLI exits without printing final text to stdout
-    (e.g., inner timeout before turn completion).
+    (e.g., inner timeout before turn completion, or delayed output flush).
     """
     if not session_id or not isinstance(session_id, str):
         return None
@@ -1132,34 +1165,60 @@ def recover_assistant_text_from_transcript(session_id: str | None) -> str | None
     custom_brain = os.environ.get("ANTIGRAVITY_BRAIN_DIR")
     if custom_brain:
         candidate_dirs.insert(0, Path(custom_brain) / session_id)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidate_dirs.append(
+            Path(local_app_data) / "Gemini" / "antigravity-cli" / "brain" / session_id
+        )
+        candidate_dirs.append(
+            Path(local_app_data) / ".gemini" / "antigravity-cli" / "brain" / session_id
+        )
 
-    for session_dir in candidate_dirs:
-        try:
-            if not session_dir.is_dir() or session_dir.is_symlink():
-                continue
-            logs_dir = session_dir / ".system_generated" / "logs"
-            if not logs_dir.is_dir() or logs_dir.is_symlink():
-                continue
-
-            for fname in ("transcript_full.jsonl", "transcript.jsonl"):
-                cand_file = logs_dir / fname
-                if not cand_file.is_file() or cand_file.is_symlink():
+    deadline = time.time() + max(0.0, poll_timeout)
+    while True:
+        for session_dir in candidate_dirs:
+            try:
+                if not session_dir.is_dir() or session_dir.is_symlink():
                     continue
-                content = _extract_last_response_from_file(cand_file)
-                if content:
-                    return content
-        except OSError:
-            continue
+                logs_dir = session_dir / ".system_generated" / "logs"
+                if not logs_dir.is_dir() or logs_dir.is_symlink():
+                    continue
+
+                for fname in ("transcript_full.jsonl", "transcript.jsonl"):
+                    cand_file = logs_dir / fname
+                    if not cand_file.is_file() or cand_file.is_symlink():
+                        continue
+                    content = _extract_last_response_from_file(
+                        cand_file,
+                        expected_prompt=expected_prompt,
+                        min_timestamp=min_timestamp,
+                    )
+                    if content:
+                        return content
+            except OSError:
+                continue
+
+        if time.time() >= deadline:
+            break
+        time.sleep(poll_interval)
+
     return None
 
 
-def _extract_last_response_from_file(path: Path) -> str | None:
+def _extract_last_response_from_file(
+    path: Path,
+    *,
+    expected_prompt: str | None = None,
+    min_timestamp: float | None = None,
+) -> str | None:
     try:
         fp = _open_transcript_no_follow(path)
     except OSError:
         return None
     try:
         lines = fp.readlines()
+        candidate_response: str | None = None
+
         for line in reversed(lines):
             line = line.strip()
             if not line:
@@ -1172,8 +1231,51 @@ def _extract_last_response_from_file(path: Path) -> str | None:
                 continue
             step_type = entry.get("type")
             content = entry.get("content")
+
+            # Collect the latest non-empty planner response for this turn
             if step_type == "PLANNER_RESPONSE" and isinstance(content, str) and content.strip():
-                return content.strip()
+                if candidate_response is None:
+                    candidate_response = content.strip()
+
+            # USER_INPUT marks the start of the current turn (scanning in reverse)
+            elif step_type == "USER_INPUT":
+                # If no planner response was found between the end of file and this USER_INPUT,
+                # the current turn has produced no final response yet.
+                # Crucially: do NOT continue scanning backwards into prior turns.
+                if candidate_response is None:
+                    return None
+
+                # Correlate prompt if specified
+                if expected_prompt is not None and expected_prompt.strip():
+                    user_text = content if isinstance(content, str) else ""
+                    clean_expected = expected_prompt.strip()
+                    probe = clean_expected[:200]
+                    if probe not in user_text:
+                        # This USER_INPUT belongs to a different/prior turn;
+                        # the current turn's USER_INPUT has not flushed yet.
+                        return None
+
+                # Correlate timestamp if specified
+                if min_timestamp is not None:
+                    created_at = entry.get("created_at")
+                    if isinstance(created_at, str):
+                        ts = _parse_iso_ts(created_at)
+                        if ts is not None and ts < (min_timestamp - 30.0):
+                            return None
+
+                return candidate_response
+
+        # Reached the start of the file without encountering a USER_INPUT boundary
+        if expected_prompt is not None and expected_prompt.strip():
+            return None
+        if min_timestamp is not None:
+            try:
+                if path.stat().st_mtime < (min_timestamp - 30.0):
+                    return None
+            except OSError:
+                return None
+
+        return candidate_response
     except OSError:
         pass
     finally:
