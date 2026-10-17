@@ -1487,7 +1487,8 @@ def test_status_preserves_actual_owner_terminal_record_written_during_probe(
     public = observer.status(record.job_id)
 
     assert public.status == "cancelled"
-    assert public.error is None
+    # The actual owner explicitly cancels the worker and records the reason.
+    assert public.error == "job cancelled by supervisor"
     assert public.finished_at is not None
     assert observer.store.get_job(record.job_id).status == "cancelled"
 
