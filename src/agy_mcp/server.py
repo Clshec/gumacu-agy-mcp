@@ -852,7 +852,7 @@ def _build_progress_summary(
         "summary": summary,
         "phase": (recent[-1]["subtype"] or recent[-1]["type"]) if recent else record.status,
         "task_preview": task_preview,
-        "last_event_at": record.last_event_at,
+        "last_event_at": record.last_event_at or (events[-1].ts if events else None),
         "event_count": len(events),
         "recent_activity": recent,
         "detail_level": "operational",

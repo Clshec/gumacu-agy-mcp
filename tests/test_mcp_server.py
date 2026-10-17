@@ -399,6 +399,7 @@ def test_agy_status_explains_live_operational_progress(reset_state, monkeypatch)
     progress = status["progress"]
     assert progress["phase"] == "server_metrics"
     assert progress["event_count"] == 2
+    assert progress["last_event_at"] is not None
     assert "Using tool: server_metrics" in progress["summary"]
     assert "Inspect the server load" in progress["summary"]
     assert progress["recent_activity"][-1]["description"] == "Using tool: server_metrics"
