@@ -38,6 +38,8 @@ TERMINAL_STATUSES = frozenset(
         "no_final_response",
     }
 )
+LIFECYCLE_STATUSES = TERMINAL_STATUSES | {"started", "progress"}
+
 
 
 class NotificationOutbox:
@@ -79,6 +81,9 @@ class NotificationOutbox:
         reason_code: str | None = None,
         device_id: str | None = None,
         request_id: str | None = None,
+        buttons: list[list[dict[str, str]]] | None = None,
+        title_source: str | None = None,
+        task_label: str | None = None,
     ) -> dict[str, Any]:
         if isinstance(record, dict):
             job_id = str(record.get("job_id") or "")
@@ -86,15 +91,18 @@ class NotificationOutbox:
             session_id = record.get("session_id")
             antigravity_title = record.get("antigravity_title")
             finished_at = record.get("finished_at")
+            title_source = title_source or record.get("title_source")
+            task_label = task_label or record.get("task_label")
         else:
             job_id = record.job_id
             status = record.status
             session_id = record.session_id
             antigravity_title = record.antigravity_title
             finished_at = record.finished_at
+            title_source = title_source or record.title_source
 
-        if status not in TERMINAL_STATUSES:
-            raise ValueError("notification requires a terminal job status")
+        if status not in LIFECYCLE_STATUSES:
+            raise ValueError("notification requires a valid job status")
         note_id = self.notification_id(job_id, status)
         with self._lock:
             existing = self._records.get(note_id)
@@ -106,6 +114,8 @@ class NotificationOutbox:
                 "job_id": job_id,
                 "session_id": session_id,
                 "antigravity_title": antigravity_title,
+                "title_source": title_source,
+                "task_label": task_label,
                 "status": status,
                 "reason_code": reason_code or status,
                 "summary": summary[:60000],
@@ -113,6 +123,7 @@ class NotificationOutbox:
                 "acknowledged_at": None,
                 "device_id": device_id,
                 "request_id": request_id,
+                "buttons": buttons,
                 "telegram": {
                     "configured": False,
                     "delivered": False,
@@ -257,6 +268,9 @@ class NotificationDispatcher:
         reason_code: str | None = None,
         device_id: str | None = None,
         request_id: str | None = None,
+        buttons: list[list[dict[str, str]]] | None = None,
+        title_source: str | None = None,
+        task_label: str | None = None,
     ) -> dict[str, Any] | None:
         if isinstance(record, dict):
             status = record.get("status")
@@ -264,7 +278,7 @@ class NotificationDispatcher:
         else:
             status = record.status
             job_id = record.job_id
-        if status not in TERMINAL_STATUSES:
+        if status not in LIFECYCLE_STATUSES:
             return None
         if self.bot is not None and isinstance(record, JobRecord):
             record = refresh_title(self.bot.store, record)
@@ -274,6 +288,9 @@ class NotificationDispatcher:
             reason_code=reason_code,
             device_id=device_id,
             request_id=request_id,
+            buttons=buttons,
+            title_source=title_source,
+            task_label=task_label,
         )
         if item.get("telegram", {}).get("delivered"):
             return item
@@ -307,16 +324,35 @@ class NotificationDispatcher:
 
     def _message(self, item: dict[str, Any]) -> str:
         status = str(item["status"])
-        icon = "✅" if status == "completed" else "⛔" if status == "quota_exhausted" else "⚠️"
+        icon = (
+            "✅" if status == "completed"
+            else "⛔" if status == "quota_exhausted"
+            else "⏳" if status == "started"
+            else "🔄" if status == "progress"
+            else "⚠️"
+        )
         lines = [f"{icon} <b>Antigravity: {html.escape(status)}</b>"]
         if item.get("device_id"):
             lines.append(f"Device: <b>{html.escape(str(item['device_id']))}</b>")
-        lines.append(f"Name: <b>{html.escape(str(item.get('antigravity_title') or 'pending'))}</b>")
+        title = item.get("antigravity_title")
+        source = item.get("title_source")
+        task_label = item.get("task_label")
+        if title and source == "antigravity":
+            lines.append(f"Name: <b>{html.escape(str(title))}</b>")
+        elif title:
+            lines.append(f"Name: <b>{html.escape(str(title))}</b>")
+        elif task_label:
+            lines.append(f"Name: <b>{html.escape(str(task_label))}</b>")
+        else:
+            lines.append(f"Name: <b>{html.escape(str(item.get('antigravity_title') or 'pending'))}</b>")
         lines.append(f"Job: <code>{html.escape(str(item['job_id']))}</code>")
+        if item.get("session_id"):
+            lines.append(f"Session: <code>{html.escape(str(item['session_id']))}</code>")
         if item.get("request_id"):
             lines.append(f"Request: <code>{html.escape(str(item['request_id']))}</code>")
         lines.append(f"Reason: <code>{html.escape(str(item['reason_code']))}</code>")
-        lines.append(html.escape(str(item["summary"])))
+        if item.get("summary"):
+            lines.append(html.escape(str(item["summary"])))
         return "\n".join(lines)
 
     def _deliver_telegram(self, item: dict[str, Any]) -> None:
@@ -331,13 +367,32 @@ class NotificationDispatcher:
                     message = self.bot.terminal_message(
                         record, str(item.get("summary") or ""),
                     )
-                # The interactive bot uses the same retry policy as the
-                # standalone Telegram sender. A brief API outage must not
-                # strand this notification until the next MCP restart.
                 delivered = False
                 attempts = 0
                 error: str | None = "TelegramSendFailed"
                 buttons = self.bot._job_buttons(record)
+                for delay in self.retry_delays:
+                    if delay:
+                        time.sleep(delay)
+                    attempts += 1
+                    try:
+                        delivered = bool(self.bot.send(message, buttons=buttons))
+                        error = None if delivered else "TelegramSendFailed"
+                    except Exception as exc:  # noqa: BLE001
+                        error = type(exc).__name__
+                    if delivered:
+                        break
+                self.outbox.update_telegram(
+                    item["id"], configured=True, delivered=delivered,
+                    attempts=attempts, error=error,
+                )
+                return
+            elif item.get("device_id"):
+                message = self._message(item)
+                buttons = item.get("buttons")
+                delivered = False
+                attempts = 0
+                error: str | None = "TelegramSendFailed"
                 for delay in self.retry_delays:
                     if delay:
                         time.sleep(delay)
@@ -362,19 +417,23 @@ class NotificationDispatcher:
                 time.sleep(delay)
             attempts += 1
             try:
+                payload: dict[str, Any] = {
+                    "chat_id": self._chat_id,
+                    "text": self._message(item),
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                }
+                buttons = item.get("buttons")
+                if buttons:
+                    payload["reply_markup"] = {"inline_keyboard": buttons}
                 response = httpx.post(
                     url,
-                    json={
-                        "chat_id": self._chat_id,
-                        "text": self._message(item),
-                        "parse_mode": "HTML",
-                        "disable_web_page_preview": True,
-                    },
+                    json=payload,
                     timeout=self.timeout_seconds,
                 )
                 response.raise_for_status()
-                payload = response.json()
-                if not payload.get("ok"):
+                res_payload = response.json()
+                if not res_payload.get("ok"):
                     raise RuntimeError("Telegram API rejected the notification")
             except Exception as exc:  # noqa: BLE001 - delivery must not affect job finalization
                 error = type(exc).__name__
@@ -390,6 +449,7 @@ class NotificationDispatcher:
 
 
 __all__ = [
+    "LIFECYCLE_STATUSES",
     "NotificationDispatcher",
     "NotificationOutbox",
     "TELEGRAM_CHAT_ID_ENV",

@@ -6,6 +6,7 @@ SQLite; every machine runs its own Antigravity CLI via device_agent.py.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import hmac
 import json
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from agy_mcp.models import JobRecord
 from agy_mcp.notifications import (
     NotificationDispatcher,
     NotificationOutbox,
@@ -35,6 +37,25 @@ MAX_BODY = 1024 * 1024
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def extract_task_label(prompt: str) -> str:
+    """Extract a sanitized, meaningful label from prompt text."""
+    if not prompt:
+        return "Remote Antigravity Task"
+    first = next((" ".join(line.split()) for line in prompt.splitlines() if line.strip()), "")
+    return first[:120] if first else "Remote Antigravity Task"
+
+
+def remote_job_buttons(job_id: str, is_terminal: bool = False) -> list[list[dict[str, str]]]:
+    ref = job_id[-12:]
+    row1 = [
+        {"text": "🔄 تحديث الحالة", "callback_data": f"status:{ref}"},
+        {"text": "💬 آخر رد", "callback_data": f"last:{ref}"},
+    ]
+    if is_terminal:
+        return [row1, [{"text": "➡️ متابعة هذه الجلسة", "callback_data": f"use:{ref}"}]]
+    return [row1]
 
 
 def load_devices(path: Path) -> dict[str, dict[str, Any]]:
@@ -82,6 +103,18 @@ class Broker:
             self.conn.execute("""CREATE TABLE IF NOT EXISTS running_jobs (
                 job_id TEXT PRIMARY KEY, device TEXT NOT NULL, request_id TEXT NOT NULL,
                 created REAL NOT NULL, updated REAL NOT NULL)""")
+            self.conn.execute("""CREATE TABLE IF NOT EXISTS remote_lifecycle (
+                job_id TEXT PRIMARY KEY, device TEXT NOT NULL, request_id TEXT NOT NULL,
+                session_id TEXT, task_label TEXT, antigravity_title TEXT,
+                title_source TEXT, prompt TEXT, status TEXT NOT NULL,
+                started_at REAL NOT NULL, updated_at REAL NOT NULL, finished_at REAL,
+                notified_started INTEGER DEFAULT 0, notified_terminal INTEGER DEFAULT 0,
+                last_progress_at REAL DEFAULT 0, last_progress_fingerprint TEXT,
+                summary TEXT, result TEXT)""")
+            self.conn.execute("""CREATE TABLE IF NOT EXISTS session_metadata (
+                session_id TEXT PRIMARY KEY, device TEXT NOT NULL,
+                task_label TEXT, antigravity_title TEXT, title_source TEXT,
+                created REAL NOT NULL, updated REAL NOT NULL)""")
 
         if dispatcher is not None:
             self.dispatcher = dispatcher
@@ -125,6 +158,40 @@ class Broker:
                 " VALUES (?,?,?,?,?,?,?)",
                 (ident, device, action, json.dumps(payload), "queued", now, now),
             )
+            if action == "start":
+                job_id = "job_r_" + ident[5:]
+                prompt = str(payload.get("PROMPT") or payload.get("prompt") or "")
+                task_label = extract_task_label(prompt)
+                antigravity_title = None
+                title_source = "prompt_label"
+                if session:
+                    meta = self.conn.execute(
+                        "SELECT task_label, antigravity_title, title_source FROM session_metadata WHERE session_id=?",
+                        (session,),
+                    ).fetchone()
+                    if meta is not None:
+                        if meta["antigravity_title"]:
+                            antigravity_title = meta["antigravity_title"]
+                            title_source = meta["title_source"] or "antigravity"
+                        if not prompt and meta["task_label"]:
+                            task_label = meta["task_label"]
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO remote_lifecycle ("
+                    "job_id, device, request_id, session_id, task_label, antigravity_title, "
+                    "title_source, prompt, status, started_at, updated_at, notified_started, notified_terminal"
+                    ") VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0)",
+                    (job_id, device, ident, session, task_label, antigravity_title, title_source, prompt, "queued", now, now),
+                )
+                if session:
+                    self.conn.execute(
+                        "INSERT INTO session_metadata(session_id, device, task_label, antigravity_title, title_source, created, updated)"
+                        " VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET "
+                        "updated=excluded.updated, "
+                        "task_label=COALESCE(excluded.task_label, session_metadata.task_label), "
+                        "antigravity_title=COALESCE(excluded.antigravity_title, session_metadata.antigravity_title), "
+                        "title_source=COALESCE(excluded.title_source, session_metadata.title_source)",
+                        (session, device, task_label, antigravity_title, title_source, now, now),
+                    )
             return ident
 
     def poll(self, device: str) -> dict[str, Any] | None:
@@ -146,6 +213,11 @@ class Broker:
     def finish(self, device: str, ident: str, claim: str, result: dict[str, Any]) -> None:
         if not CALL_ID.fullmatch(ident) or not isinstance(result, dict):
             raise ValueError("invalid completion envelope")
+        should_notify_started = False
+        should_notify_progress = False
+        progress_summary = None
+        action = ""
+        job_id = None
         with self.lock, self.conn:
             row = self.conn.execute("SELECT * FROM calls WHERE id=?", (ident,)).fetchone()
             if row is None or row["device"] != device:
@@ -174,9 +246,54 @@ class Broker:
             self.conn.execute("UPDATE calls SET state='done',result=?,updated=?"
                               " WHERE id=?", (value, time.time(), ident))
             action = str(row["action"])
+
+            rec = result.get("record") if isinstance(result.get("record"), dict) else None
+            if result.get("job_id"):
+                job_id = str(result["job_id"])
+            elif rec and rec.get("job_id"):
+                job_id = str(rec["job_id"])
+            elif action == "start":
+                job_id = "job_r_" + ident[5:]
+            elif isinstance(row.get("payload"), str):
+                try:
+                    p = json.loads(row["payload"])
+                    if p.get("job_id"):
+                        job_id = str(p["job_id"])
+                except Exception:
+                    pass
+
+            antigravity_title = None
+            title_source = None
+            if rec and rec.get("antigravity_title"):
+                antigravity_title = str(rec["antigravity_title"])
+                title_source = str(rec.get("title_source") or "antigravity")
+            elif result.get("antigravity_title"):
+                antigravity_title = str(result["antigravity_title"])
+                title_source = str(result.get("title_source") or "antigravity")
+
+            if job_id:
+                lc = self.conn.execute("SELECT * FROM remote_lifecycle WHERE job_id=?", (job_id,)).fetchone()
+                now = time.time()
+                if lc is not None:
+                    new_session = session or lc["session_id"]
+                    new_title = antigravity_title or lc["antigravity_title"]
+                    new_source = title_source if antigravity_title else lc["title_source"]
+                    self.conn.execute(
+                        "UPDATE remote_lifecycle SET session_id=?, antigravity_title=?, title_source=?, updated_at=? WHERE job_id=?",
+                        (new_session, new_title, new_source, now, job_id),
+                    )
+                    if new_session and (antigravity_title or not lc["session_id"]):
+                        self.conn.execute(
+                            "INSERT INTO session_metadata(session_id, device, task_label, antigravity_title, title_source, created, updated)"
+                            " VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET "
+                            "updated=excluded.updated, "
+                            "antigravity_title=COALESCE(excluded.antigravity_title, session_metadata.antigravity_title), "
+                            "title_source=COALESCE(excluded.title_source, session_metadata.title_source)",
+                            (new_session, device, lc["task_label"], new_title, new_source, now, now),
+                        )
+
             if action == "start":
                 status = result.get("status")
-                job_id = result.get("job_id")
                 if status == "running" and job_id:
                     now = time.time()
                     self.conn.execute(
@@ -184,6 +301,39 @@ class Broker:
                         " VALUES(?,?,?,?,?)",
                         (job_id, device, ident, now, now),
                     )
+                    self.conn.execute(
+                        "UPDATE remote_lifecycle SET status='running', updated_at=? WHERE job_id=?",
+                        (now, job_id),
+                    )
+                    lc = self.conn.execute("SELECT notified_started FROM remote_lifecycle WHERE job_id=?", (job_id,)).fetchone()
+                    if lc and lc["notified_started"] == 0:
+                        self.conn.execute("UPDATE remote_lifecycle SET notified_started=1 WHERE job_id=?", (job_id,))
+                        should_notify_started = True
+
+            elif action in {"status", "result"} and job_id:
+                status_val = (rec.get("status") if rec else None) or result.get("status")
+                if status_val == "running":
+                    prog_obj = result.get("progress") if isinstance(result.get("progress"), dict) else (rec.get("progress") if rec else None)
+                    prog_summary = (prog_obj.get("label") if isinstance(prog_obj, dict) else None) or (prog_obj.get("summary") if isinstance(prog_obj, dict) else None) or "Working on the task"
+                    fp = f"{status_val}:{prog_summary}"
+                    now = time.time()
+                    lc = self.conn.execute("SELECT last_progress_at, last_progress_fingerprint FROM remote_lifecycle WHERE job_id=?", (job_id,)).fetchone()
+                    if lc:
+                        last_at = lc["last_progress_at"] or 0
+                        last_fp = lc["last_progress_fingerprint"]
+                        if (now - last_at >= 60.0) and fp != last_fp:
+                            self.conn.execute(
+                                "UPDATE remote_lifecycle SET last_progress_at=?, last_progress_fingerprint=? WHERE job_id=?",
+                                (now, fp, job_id),
+                            )
+                            should_notify_progress = True
+                            progress_summary = prog_summary
+
+        if should_notify_started and job_id:
+            self.notify_remote_lifecycle(device, job_id, "started", result, ident=ident)
+        elif should_notify_progress and job_id:
+            self.notify_remote_lifecycle(device, job_id, "progress", result, ident=ident, summary=progress_summary)
+
         self.notify_remote_terminal(device, ident, result, action=action)
 
     def get(self, ident: str) -> dict[str, Any]:
@@ -250,40 +400,81 @@ class Broker:
 
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM running_jobs WHERE job_id=?", (job_id,))
+            lc = self.conn.execute("SELECT notified_terminal FROM remote_lifecycle WHERE job_id=?", (job_id,)).fetchone()
+            if lc and lc["notified_terminal"] == 1:
+                return None  # Exactly ONE terminal notification per job!
+            now = time.time()
+            if lc is not None:
+                self.conn.execute(
+                    "UPDATE remote_lifecycle SET notified_terminal=1, status=?, finished_at=?, updated_at=? WHERE job_id=?",
+                    (status, now, now, job_id),
+                )
+            else:
+                self.conn.execute(
+                    "INSERT INTO remote_lifecycle (job_id, device, request_id, status, started_at, updated_at, finished_at, notified_started, notified_terminal) "
+                    "VALUES (?,?,?,?,?,?,?,1,1)",
+                    (job_id, device, ident, status, now, now, now),
+                )
 
-        session_id = None
-        if record and record.get("session_id"):
-            session_id = str(record["session_id"])
-        elif result.get("SESSION_ID"):
-            session_id = str(result["SESSION_ID"])
+        return self.notify_remote_lifecycle(device, job_id, status, result, ident=ident)
 
-        title = None
-        if record and record.get("antigravity_title"):
-            title = str(record["antigravity_title"])
-        elif record and record.get("task_preview"):
-            title = str(record["task_preview"])
-        elif result.get("title"):
-            title = str(result["title"])
+    def notify_remote_lifecycle(
+        self,
+        device: str,
+        job_id: str,
+        status: str,
+        result: dict[str, Any] | None = None,
+        ident: str | None = None,
+        summary: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.dispatcher:
+            return None
+        with self.lock, self.conn:
+            row = self.conn.execute("SELECT * FROM remote_lifecycle WHERE job_id=?", (job_id,)).fetchone()
+            session_id = row["session_id"] if row else None
+            task_label = row["task_label"] if row else None
+            antigravity_title = row["antigravity_title"] if row else None
+            title_source = row["title_source"] if row else None
+            req_id = ident or (row["request_id"] if row else ident)
 
-        summary = ""
-        if result.get("result_text"):
-            summary = str(result["result_text"])
-        elif record and record.get("error"):
-            summary = str(record["error"])
-        elif result.get("error"):
-            summary = str(result["error"])
-        elif record and isinstance(record.get("progress"), dict) and record["progress"].get("summary"):
-            summary = str(record["progress"]["summary"])
-        else:
-            summary = f"Remote task on {device} reached {status}."
+        is_terminal = status in TERMINAL_STATUSES
+        if summary is None:
+            if is_terminal:
+                rec = result.get("record") if isinstance(result, dict) and isinstance(result.get("record"), dict) else None
+                if result and result.get("result_text"):
+                    summary = str(result["result_text"])
+                elif rec and rec.get("error"):
+                    summary = str(rec["error"])
+                elif result and result.get("error"):
+                    summary = str(result["error"])
+                elif rec and isinstance(rec.get("progress"), dict) and rec["progress"].get("summary"):
+                    summary = str(rec["progress"]["summary"])
+                else:
+                    summary = f"Remote task on {device} reached {status}."
+            elif status == "started":
+                summary = f"Antigravity task started on {device}."
+            elif status == "progress":
+                summary = f"Antigravity is working on {device}."
+            else:
+                summary = f"Remote task update: {status}."
+
+        with self.lock, self.conn:
+            self.conn.execute(
+                "UPDATE remote_lifecycle SET summary=?, result=?, updated_at=? WHERE job_id=?",
+                (summary, json.dumps(result, ensure_ascii=False) if result else None, time.time(), job_id),
+            )
 
         safety = SafetyPolicy()
-        redacted_summary = safety.redact(summary)[:1000]
+        redacted_summary = safety.redact(summary)[:1000] if summary else ""
+
+        buttons = remote_job_buttons(job_id, is_terminal=is_terminal)
 
         payload = {
             "job_id": job_id,
             "session_id": session_id,
-            "antigravity_title": title,
+            "antigravity_title": antigravity_title,
+            "title_source": title_source,
+            "task_label": task_label,
             "status": status,
         }
         try:
@@ -292,7 +483,10 @@ class Broker:
                 summary=redacted_summary,
                 reason_code=status,
                 device_id=device,
-                request_id=ident,
+                request_id=req_id,
+                buttons=buttons,
+                title_source=title_source,
+                task_label=task_label,
             )
         except Exception:
             return None
@@ -417,6 +611,62 @@ def make_handler(broker: Broker, admin_token: str):
             self.do_GET()
 
     return Handler
+
+
+def load_remote_jobs_as_records(db_path: Path | str | None = None) -> list[JobRecord]:
+    path = Path(db_path or os.environ.get("AGY_DEVICE_GATEWAY_DB", "/var/lib/gumacu-agy-devices/broker.sqlite"))
+    if not path.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                table_check = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='remote_lifecycle';").fetchone()
+                if not table_check:
+                    return []
+                rows = conn.execute(
+                    "SELECT job_id, device, request_id, session_id, task_label, antigravity_title, "
+                    "title_source, prompt, status, started_at, updated_at, finished_at, summary "
+                    "FROM remote_lifecycle ORDER BY updated_at DESC LIMIT 50"
+                ).fetchall()
+        finally:
+            conn.close()
+        records: list[JobRecord] = []
+        for row in rows:
+            started_iso = datetime.datetime.fromtimestamp(row["started_at"], datetime.timezone.utc).isoformat()
+            updated_iso = datetime.datetime.fromtimestamp(row["updated_at"], datetime.timezone.utc).isoformat()
+            finished_iso = (
+                datetime.datetime.fromtimestamp(row["finished_at"], datetime.timezone.utc).isoformat()
+                if row["finished_at"] else None
+            )
+            title = row["antigravity_title"] or row["task_label"] or "Remote Antigravity Task"
+            title_source = row["title_source"] or ("antigravity" if row["antigravity_title"] else "antigravity_task")
+            rec = JobRecord(
+                job_id=row["job_id"],
+                session_id=row["session_id"],
+                antigravity_title=title,
+                title_source=title_source,
+                status=row["status"],
+                backend="agy",
+                cwd=f"<{row['device']}>",
+                started_at=started_iso,
+                updated_at=updated_iso,
+                finished_at=finished_iso,
+                request={"prompt": row["prompt"] or "", "SESSION_ID": row["session_id"]},
+                extra={
+                    "device_id": row["device"],
+                    "request_id": row["request_id"],
+                    "task_label": row["task_label"],
+                    "summary": row["summary"],
+                    "antigravity_title": row["antigravity_title"],
+                    "title_source": row["title_source"],
+                },
+            )
+            records.append(rec)
+        return records
+    except Exception:
+        return []
 
 
 def main() -> None:

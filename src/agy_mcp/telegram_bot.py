@@ -274,6 +274,9 @@ class TelegramBot:
     def _inherit_conversation_title(self, record: JobRecord) -> JobRecord:
         """Pin the first session title, including ChatGPT-initiated follow-ups."""
 
+        if record.extra and record.extra.get("device_id"):
+            return record
+
         if not record.session_id:
             return refresh_title(self.store, record)
 
@@ -367,7 +370,10 @@ class TelegramBot:
     def terminal_message(self, record: JobRecord, summary: str) -> str:
         record = self._inherit_conversation_title(record)
         self._remember_conversation_title(record)
-        progress, _ = safe_progress(self.store.read_events(record.job_id))
+        if record.extra and record.extra.get("device_id"):
+            progress = record.extra.get("summary") or record.status
+        else:
+            progress, _ = safe_progress(self.store.read_events(record.job_id))
         heading = "✅ اكتملت مهمة Antigravity" if record.status == "completed" else "⛔ انتهت الحصة" if record.status == "quota_exhausted" else "⚠️ انتهت مهمة Antigravity"
         return self._format_record(record, progress=progress, heading=heading, summary=summary)
 
@@ -392,16 +398,22 @@ class TelegramBot:
         ]
 
     def _format_record(self, record: JobRecord, *, progress: str, heading: str, summary: str | None = None) -> str:
+        device_id = (record.extra or {}).get("device_id") if isinstance(record.extra, dict) else None
         lines = [
             f"<b>{heading}</b>",
+        ]
+        if device_id:
+            lines.append(f"الجهاز: <code>{html.escape(str(device_id))}</code>")
+        lines.extend([
             f"الاسم: <b>{html.escape(job_title(record))}</b>",
             f"الحالة: <code>{html.escape(record.status)}</code>",
             f"آخر تقدم: {html.escape(progress)}",
             f"آخر تحديث: <code>{html.escape(record.last_event_at or record.updated_at)}</code>",
             f"المعرّف: <code>{html.escape(record.job_id[-12:])}</code>",
-        ]
-        if summary:
-            lines.append(f"النتيجة: {html.escape(self.safety.redact(summary))}")
+        ])
+        res_summary = summary or (record.extra.get("summary") if (record.extra and record.status in TERMINAL) else None)
+        if res_summary:
+            lines.append(f"النتيجة: {html.escape(self.safety.redact(res_summary))}")
         return "\n".join(lines)
 
     def _poll_loop(self) -> None:
@@ -600,7 +612,10 @@ class TelegramBot:
         if record is None:
             self.send("لم أجد هذه المحادثة.")
             return
-        progress, _ = safe_progress(self.store.read_events(record.job_id))
+        if record.extra and record.extra.get("device_id"):
+            progress = record.extra.get("summary") or f"حالة الجهاز: {record.status}"
+        else:
+            progress, _ = safe_progress(self.store.read_events(record.job_id))
         buttons = [
             [
                 {"text": "📋 تحديث الحالة", "callback_data": f"status:{record.job_id[-12:]}"},
@@ -619,8 +634,11 @@ class TelegramBot:
         if record is None:
             self.send("لم أجد المهمة المرتبطة بهذه الرسالة.")
             return
-        events = self.store.read_events(record.job_id)
-        text = next((event.text for event in reversed(events) if event.type == "assistant" and event.text), None)
+        if record.extra and record.extra.get("device_id"):
+            text = record.extra.get("summary")
+        else:
+            events = self.store.read_events(record.job_id)
+            text = next((event.text for event in reversed(events) if event.type == "assistant" and event.text), None)
         if not text:
             self.send("لم يصل رد نصي من Antigravity لهذه المهمة بعد.", buttons=self._job_buttons(record))
             return
@@ -634,6 +652,15 @@ class TelegramBot:
             record = self._inherit_conversation_title(record)
             self._remember_conversation_title(record)
             refreshed.append(record)
+        try:
+            from agy_mcp.device_gateway import load_remote_jobs_as_records
+            remote = load_remote_jobs_as_records()
+            for r in remote:
+                self._remember_conversation_title(r)
+            refreshed.extend(remote)
+        except Exception:
+            pass
+        refreshed.sort(key=lambda r: r.updated_at or r.started_at or "", reverse=True)
         return refreshed
 
     def _help(self) -> None:
@@ -657,7 +684,10 @@ class TelegramBot:
                 self.send("لا توجد مهام جارية الآن.")
                 return
             for record in active[:10]:
-                progress, _ = safe_progress(self.store.read_events(record.job_id))
+                if record.extra and record.extra.get("device_id"):
+                    progress = record.extra.get("summary") or f"حالة الجهاز: {record.status}"
+                else:
+                    progress, _ = safe_progress(self.store.read_events(record.job_id))
                 self.send(self._format_record(record, progress=progress, heading="📋 حالة المهمة"), buttons=self._job_buttons(record))
             return
         self._send_one(reference)
@@ -676,7 +706,10 @@ class TelegramBot:
             else:
                 self.send("لم أجد مهمة بهذا الاسم أو الرقم.")
             return
-        progress, _ = safe_progress(self.store.read_events(record.job_id))
+        if record.extra and record.extra.get("device_id"):
+            progress = record.extra.get("summary") or f"حالة الجهاز: {record.status}"
+        else:
+            progress, _ = safe_progress(self.store.read_events(record.job_id))
         self.send(self._format_record(record, progress=progress, heading="📋 حالة المهمة"), buttons=self._job_buttons(record))
 
     def _recent(self) -> None:
@@ -690,6 +723,10 @@ class TelegramBot:
         if not prompt:
             self.send("استخدم: /new ثم اكتب الرسالة التي تريد إرسالها إلى Antigravity")
             return
+        self._state.pop("active_device_id", None)
+        self._state.pop("active_session_id", None)
+        self._state.pop("active_conversation_title", None)
+        self._save_state()
         self._start(prompt, None)
 
     def _use(self, reference: str) -> None:
@@ -703,13 +740,60 @@ class TelegramBot:
         self._state["active_session_id"] = record.session_id
         self._state["active_job_id"] = record.job_id
         self._state["active_conversation_title"] = job_title(record)
+        if record.extra and record.extra.get("device_id"):
+            self._state["active_device_id"] = record.extra["device_id"]
+        else:
+            self._state.pop("active_device_id", None)
         self._remember_conversation_title(record)
         self._save_state()
-        self.send(f"تم اختيار جلسة: <b>{html.escape(job_title(record))}</b>\nأرسل رسالتك كنص عادي.")
+        device_note = f"\nالجهاز: <code>{html.escape(str(record.extra['device_id']))}</code>" if record.extra and record.extra.get("device_id") else ""
+        self.send(f"تم اختيار جلسة: <b>{html.escape(job_title(record))}</b>{device_note}\nأرسل رسالتك كنص عادي.")
 
     def _continue_or_start(self, prompt: str) -> None:
         session_id = self._state.get("active_session_id")
-        self._start(prompt, session_id if isinstance(session_id, str) else None)
+        device_id = self._state.get("active_device_id")
+        if device_id and isinstance(device_id, str):
+            self._start_remote(device_id, prompt, session_id if isinstance(session_id, str) else None)
+        else:
+            self._start(prompt, session_id if isinstance(session_id, str) else None)
+
+    def _start_remote(self, device_id: str, prompt: str, session_id: str | None) -> None:
+        from agy_mcp.device_tools import gateway_call
+        payload: dict[str, Any] = {
+            "PROMPT": prompt,
+            "cwd": ".",
+            "mode": "long",
+            "allow_write": False,
+        }
+        if session_id:
+            payload["SESSION_ID"] = session_id
+        try:
+            res = gateway_call("/v1/admin/submit", {
+                "device_id": device_id,
+                "action": "start",
+                "payload": payload,
+            })
+        except Exception as exc:  # noqa: BLE001
+            self.send(f"تعذر بدء الرسالة على الجهاز {device_id}: {html.escape(self.safety.redact(str(exc))[:300])}")
+            return
+        if not res.get("success"):
+            self.send(f"تعذر إرسال الطلب إلى {device_id}: {html.escape(str(res.get('error') or 'خطأ غير معروف'))}")
+            return
+        req_id = res.get("request_id")
+        job_id = "job_r_" + req_id[5:] if req_id and req_id.startswith("call_") else str(req_id)
+        self._state["active_job_id"] = job_id
+        if session_id:
+            self._state["active_session_id"] = session_id
+        self._state["active_device_id"] = device_id
+        self._save_state()
+        action = "متابعة الجلسة" if session_id else "بدء مهمة جديدة"
+        title = self._state.get("active_conversation_title")
+        title_line = f"\nالمحادثة: <b>{html.escape(str(title))}</b>" if title else ""
+        self.send(
+            f"⏳ تم {action} على الجهاز <code>{html.escape(device_id)}</code>.{title_line}\n"
+            f"المعرّف: <code>{html.escape(str(job_id)[-12:])}</code>\n"
+            "سيرسل إشعار عند بدء التنفيذ ثم النتيجة النهائية."
+        )
 
     def _start(self, prompt: str, session_id: str | None) -> None:
         cwd = os.environ.get("AGY_MCP_TELEGRAM_CWD")

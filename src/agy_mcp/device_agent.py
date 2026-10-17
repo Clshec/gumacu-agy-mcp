@@ -40,6 +40,27 @@ def post(url: str, token: str, path: str, payload: dict[str, Any]) -> dict[str, 
         return result
 
 
+def _enrich_title(res: dict[str, Any]) -> None:
+    if not isinstance(res, dict):
+        return
+    record = res.get("record") if isinstance(res.get("record"), dict) else res
+    if not isinstance(record, dict):
+        return
+    session_id = record.get("session_id") or record.get("SESSION_ID") or res.get("SESSION_ID")
+    if not session_id:
+        return
+    try:
+        from agy_mcp.antigravity_metadata import conversation_title
+        title = conversation_title(str(session_id))
+        if title:
+            record["antigravity_title"] = title
+            record["title_source"] = "antigravity"
+            res["antigravity_title"] = title
+            res["title_source"] = "antigravity"
+    except Exception:
+        pass
+
+
 def dispatch(action: str, payload: dict[str, Any], call_id: str) -> dict[str, Any]:
     """Never accept a shell command or arbitrary Python function name."""
     if action not in ACTIONS or not CALL_ID.fullmatch(call_id):
@@ -58,7 +79,9 @@ def dispatch(action: str, payload: dict[str, Any], call_id: str) -> dict[str, An
         # identifiers are masked as secret-like by SafetyPolicy.redact().
         # Derive it from the broker call ID so replay is idempotent.
         args["job_id"] = "job_r_" + call_id[5:]
-        return server.agy_start_tool(**args).model_dump(mode="json")
+        res = server.agy_start_tool(**args).model_dump(mode="json")
+        _enrich_title(res)
+        return res
     if action in {"status", "read", "result", "cancel"}:
         if action == "status":
             fn = server.agy_status_tool
@@ -74,7 +97,9 @@ def dispatch(action: str, payload: dict[str, Any], call_id: str) -> dict[str, An
             allowed = {"job_id"}
         if not set(payload) <= allowed or not isinstance(payload.get("job_id"), str):
             raise ValueError("invalid job lookup parameters")
-        return fn(**payload).model_dump(mode="json")
+        res = fn(**payload).model_dump(mode="json")
+        _enrich_title(res)
+        return res
     if payload:
         raise ValueError("unexpected arguments")
     if action == "sessions":

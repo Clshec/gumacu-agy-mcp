@@ -270,5 +270,124 @@ def test_gateway_running_jobs_watcher(test_env, monkeypatch: pytest.MonkeyPatch)
     with broker.lock:
         assert broker.conn.execute("SELECT * FROM running_jobs WHERE job_id=?", (job_id,)).fetchone() is None
 
-    assert outbox.list_pending()["count"] == 1
-    assert outbox.list_pending()["notifications"][0]["job_id"] == job_id
+    assert outbox.list_pending()["count"] == 2
+    notes = outbox.list_pending()["notifications"]
+    assert {n["status"] for n in notes} == {"started", "completed"}
+    assert all(n["job_id"] == job_id for n in notes)
+
+
+def test_remote_lifecycle_title_persistence_and_no_duplicates(test_env, monkeypatch: pytest.MonkeyPatch):
+    broker, outbox, dispatcher = test_env
+
+    delivered = []
+    def fake_post(url, *, json, timeout):
+        delivered.append(json)
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    prompt = "Task 1: Run diagnostics\nSecond line with more details"
+    ident = broker.submit("windows-main", "start", {"PROMPT": prompt, "SESSION_ID": "sess_abc123"})
+    job_id = "job_r_" + ident[5:]
+
+    # Check task label extracted and persisted in remote_lifecycle
+    with broker.lock:
+        row = broker.conn.execute("SELECT * FROM remote_lifecycle WHERE job_id=?", (job_id,)).fetchone()
+        assert row is not None
+        assert row["task_label"] == "Task 1: Run diagnostics"
+        assert row["session_id"] == "sess_abc123"
+
+    work = broker.poll("windows-main")
+    # 1. Device reports running -> sends STARTED notification
+    broker.finish("windows-main", ident, work["claim"], {
+        "success": True,
+        "job_id": job_id,
+        "status": "running",
+    })
+    assert len(delivered) == 1
+    assert "started" in delivered[0]["text"]
+    assert "Task 1: Run diagnostics" in delivered[0]["text"]
+    assert "pending" not in delivered[0]["text"]
+    assert delivered[0].get("reply_markup", {}).get("inline_keyboard") is not None
+
+    # 2. Terminal update with metadata title via status check
+    ident_stat = broker.submit("windows-main", "status", {"job_id": job_id})
+    work_stat = broker.poll("windows-main")
+    broker.finish("windows-main", ident_stat, work_stat["claim"], {
+        "success": True,
+        "job_id": job_id,
+        "status": "completed",
+        "antigravity_title": "Real Antigravity Title",
+        "result_text": "Diagnostics complete: OK",
+    })
+    assert len(delivered) == 2
+    assert "completed" in delivered[1]["text"]
+    assert "Real Antigravity Title" in delivered[1]["text"]
+    assert "pending" not in delivered[1]["text"]
+
+    # 3. Duplicate status/terminal must NOT send another terminal notification
+    ident_stat2 = broker.submit("windows-main", "status", {"job_id": job_id})
+    work_stat2 = broker.poll("windows-main")
+    broker.finish("windows-main", ident_stat2, work_stat2["claim"], {
+        "success": True,
+        "job_id": job_id,
+        "status": "completed",
+        "antigravity_title": "Real Antigravity Title",
+        "result_text": "Diagnostics complete: OK",
+    })
+    assert len(delivered) == 2  # strictly 2, no duplicate!
+
+
+def test_session_title_inheritance_across_turns(test_env):
+    broker, outbox, dispatcher = test_env
+
+    # First turn establishes title
+    ident1 = broker.submit("windows-main", "start", {"PROMPT": "First Turn Prompt", "SESSION_ID": "sess_inherit"})
+    job_id1 = "job_r_" + ident1[5:]
+    work1 = broker.poll("windows-main")
+    broker.finish("windows-main", ident1, work1["claim"], {
+        "success": True,
+        "job_id": job_id1,
+        "status": "completed",
+        "antigravity_title": "Inherited Session Title",
+    })
+
+    # Second turn inherits the title even with different prompt
+    ident2 = broker.submit("windows-main", "start", {"PROMPT": "Follow-up question", "SESSION_ID": "sess_inherit"})
+    job_id2 = "job_r_" + ident2[5:]
+
+    with broker.lock:
+        row = broker.conn.execute("SELECT * FROM remote_lifecycle WHERE job_id=?", (job_id2,)).fetchone()
+        assert row is not None
+        assert row["antigravity_title"] == "Inherited Session Title"
+        assert row["title_source"] == "antigravity"
+
+
+def test_load_remote_jobs_as_records_and_resolve(test_env):
+    broker, outbox, dispatcher = test_env
+    from agy_mcp.device_gateway import load_remote_jobs_as_records
+    from agy_mcp.telegram_bot import resolve_job
+
+    ident = broker.submit("windows-main", "start", {"PROMPT": "Quick test", "SESSION_ID": "sess_rec"})
+    job_id = "job_r_" + ident[5:]
+    work = broker.poll("windows-main")
+    broker.finish("windows-main", ident, work["claim"], {
+        "success": True,
+        "job_id": job_id,
+        "status": "completed",
+        "antigravity_title": "Record Test Title",
+        "result_text": "Done OK",
+    })
+
+    records = load_remote_jobs_as_records(broker.conn_path if hasattr(broker, "conn_path") else broker.conn.execute("PRAGMA database_list").fetchone()["file"])
+    assert len(records) >= 1
+    rec = next(r for r in records if r.job_id == job_id)
+    assert rec.antigravity_title == "Record Test Title"
+    assert rec.extra["device_id"] == "windows-main"
+    assert rec.extra["summary"] == "Done OK"
+
+    # Verify resolve_job matches last 12 chars
+    matched, _ = resolve_job(records, job_id[-12:])
+    assert matched is not None
+    assert matched.job_id == job_id
+
