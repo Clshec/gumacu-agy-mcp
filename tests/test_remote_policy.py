@@ -112,6 +112,22 @@ def test_operator_profile_allows_execute_and_write(monkeypatch, tmp_path):
     assert out["cwd"] == str(tmp_path.resolve())
 
 
+def test_remote_profile_allows_long_as_monitoring_hint(monkeypatch, tmp_path):
+    monkeypatch.setenv("GUMACU_REMOTE_PROFILE", "controlled")
+    monkeypatch.setenv("GUMACU_ALLOWED_WORKSPACE", str(tmp_path))
+
+    out = restrict_request({
+        "cwd": str(tmp_path),
+        "mode": "long",
+        "allow_write": False,
+        "prompt": "monitor this task",
+    })
+
+    assert out["mode"] == "long"
+    assert out["allow_write"] is False
+    assert out["sandbox"] is True
+
+
 def test_operator_still_enforces_workspace_boundary(monkeypatch, tmp_path):
     monkeypatch.setenv("GUMACU_REMOTE_PROFILE", "operator")
     monkeypatch.setenv("GUMACU_ALLOWED_WORKSPACE", str(tmp_path))

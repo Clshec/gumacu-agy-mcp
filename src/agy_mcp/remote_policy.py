@@ -94,10 +94,13 @@ def restrict_request(payload: dict[str, Any]) -> dict[str, Any]:
     mode = payload.get("mode", "ask")
     allow_write = bool(payload.get("allow_write", False))
 
-    if allow_write or mode not in {"ask", "plan"}:
+    # ``long`` is an execution-lifecycle hint, not a request for write
+    # privileges. The agy adapter treats it like ask mode while the MCP
+    # supervisor provides detachment and monitoring.
+    if allow_write or mode not in {"ask", "plan", "long"}:
         if not operator_auth:
             raise ValueError("remote execution/write modes are not enabled")
-        if mode not in {"ask", "plan", "execute"}:
+        if mode not in {"ask", "plan", "long", "execute"}:
             raise ValueError(f"unsupported mode: {mode}")
 
     if payload.get("extra_env"):

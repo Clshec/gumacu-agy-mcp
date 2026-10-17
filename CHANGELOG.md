@@ -23,6 +23,8 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
   `agy_start` for tasks where the user may wait, request progress, or expect a
   completion event; synchronous `agy` and `agy_continue` are now documented as
   quick one-shot calls only.
+- Allow remote `mode=long` as a non-writing monitoring hint, matching the
+  public tool schema and the supervisor's detached-job behavior.
 - Repair local Codex pipeline execution by calling the Supervisor's supported
   `start` and `cancel` interfaces instead of the nonexistent `start_job` and
   `cancel_job` methods.
