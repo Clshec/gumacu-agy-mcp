@@ -297,13 +297,27 @@ class NotificationDispatcher:
                     message = self.bot.terminal_message(
                         record, str(item.get("summary") or ""),
                     )
-                delivered = self.bot.send(
-                    message,
-                    buttons=self.bot._job_buttons(record),
-                )
+                # The interactive bot uses the same retry policy as the
+                # standalone Telegram sender. A brief API outage must not
+                # strand this notification until the next MCP restart.
+                delivered = False
+                attempts = 0
+                error: str | None = "TelegramSendFailed"
+                buttons = self.bot._job_buttons(record)
+                for delay in self.retry_delays:
+                    if delay:
+                        time.sleep(delay)
+                    attempts += 1
+                    try:
+                        delivered = bool(self.bot.send(message, buttons=buttons))
+                        error = None if delivered else "TelegramSendFailed"
+                    except Exception as exc:  # noqa: BLE001
+                        error = type(exc).__name__
+                    if delivered:
+                        break
                 self.outbox.update_telegram(
-                    item["id"], configured=True, delivered=delivered, attempts=1,
-                    error=None if delivered else "TelegramSendFailed",
+                    item["id"], configured=True, delivered=delivered,
+                    attempts=attempts, error=error,
                 )
                 return
         url = f"https://api.telegram.org/bot{self._token}/sendMessage"
