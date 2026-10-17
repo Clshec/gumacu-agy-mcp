@@ -87,3 +87,18 @@ def test_first_poll_discards_existing_updates_without_handling_them(tmp_path: Pa
     bot._discard_backlog()
     assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))["offset"] == 100
 
+
+def test_title_falls_back_to_actual_antigravity_task_and_can_refresh(tmp_path: Path, monkeypatch):
+    class Store:
+        def update_job(self, value):
+            return value
+
+    item = record("job_1234567890_cccccccccccc")
+    item.request = {"prompt": "  Inspect server load and report clearly  \nDo not change it"}
+    monkeypatch.setattr("agy_mcp.telegram_bot.conversation_title", lambda session_id: None)
+    from agy_mcp.telegram_bot import refresh_title
+
+    refreshed = refresh_title(Store(), item)
+    assert refreshed.antigravity_title == "Inspect server load and report clearly"
+    assert refreshed.title_source == "antigravity_task"
+

@@ -408,7 +408,7 @@ class JobRecord(_DictLikeEnvelope):
     job_id: str
     session_id: str | None = None
     antigravity_title: str | None = None
-    title_source: Literal["antigravity", "pending"] = "pending"
+    title_source: Literal["antigravity", "antigravity_task", "pending"] = "pending"
     status: JobStatus = "running"
     backend: BackendName | None = None
     cwd: str = ""

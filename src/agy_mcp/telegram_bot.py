@@ -44,6 +44,15 @@ def refresh_title(store: Any, record: JobRecord) -> JobRecord:
         record.antigravity_title = title
         record.title_source = "antigravity"
         store.update_job(record)
+    elif not record.antigravity_title:
+        prompt = ""
+        if isinstance(record.request, dict):
+            prompt = str(record.request.get("prompt") or record.request.get("PROMPT") or "")
+        first = next((" ".join(line.split()) for line in prompt.splitlines() if line.strip()), "")
+        if first:
+            record.antigravity_title = first[:120]
+            record.title_source = "antigravity_task"
+            store.update_job(record)
     return record
 
 
@@ -168,6 +177,14 @@ class TelegramBot:
         progress, _ = safe_progress(self.store.read_events(record.job_id))
         heading = "✅ اكتملت مهمة Antigravity" if record.status == "completed" else "⛔ انتهت الحصة" if record.status == "quota_exhausted" else "⚠️ انتهت مهمة Antigravity"
         return self._format_record(record, progress=progress, heading=heading, summary=summary)
+
+    def conversation_reply(self, record: JobRecord, reply: str) -> str:
+        record = refresh_title(self.store, record)
+        safe = self.safety.redact(reply)[:3400]
+        return (
+            f"🤖 <b>{html.escape(job_title(record))}</b>\n\n"
+            f"{html.escape(safe or 'انتهت الجلسة دون رد نصي.') }"
+        )
 
     @staticmethod
     def _job_buttons(record: JobRecord) -> list[list[dict[str, str]]]:
@@ -389,6 +406,10 @@ class TelegramBot:
         if session_id:
             self._state["active_session_id"] = session_id
         self._save_state()
+        record = self.store.get_job(response.job_id)
+        if record is not None:
+            record.extra["telegram_origin"] = True
+            self.store.update_job(record)
         action = "متابعة الجلسة" if session_id else "بدء جلسة جديدة"
         self.send(f"✅ تم {action}.\nالمعرّف: <code>{response.job_id[-12:]}</code>\nسأرسل التقدم والنتيجة هنا.")
 

@@ -272,8 +272,16 @@ class NotificationDispatcher:
         if self.bot is not None:
             record = self.bot.store.get_job(str(item["job_id"]))
             if record is not None:
+                if record.extra.get("telegram_origin"):
+                    message = self.bot.conversation_reply(
+                        record, str(item.get("summary") or ""),
+                    )
+                else:
+                    message = self.bot.terminal_message(
+                        record, str(item.get("summary") or ""),
+                    )
                 delivered = self.bot.send(
-                    self.bot.terminal_message(record, str(item.get("summary") or "")),
+                    message,
                     buttons=self.bot._job_buttons(record),
                 )
                 self.outbox.update_telegram(
