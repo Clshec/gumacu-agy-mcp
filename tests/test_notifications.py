@@ -127,3 +127,34 @@ def test_telegram_replay_survives_chat_acknowledgement(tmp_path: Path, monkeypat
         item["id"], configured=True, delivered=True, attempts=1, error=None
     )
     assert outbox.list_telegram_undelivered()["count"] == 0
+
+
+def test_telegram_replay_schedules_all_pages_even_when_delivery_is_fast(
+    tmp_path: Path, monkeypatch
+):
+    outbox = NotificationOutbox(tmp_path / "notifications.json")
+    for i in range(105):
+        record = _record()
+        record.job_id = f"job_1234567890_{i:012x}"
+        outbox.record(record, summary=f"result {i}")
+    sent: list[str] = []
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, name, daemon):
+            self.item = args[0]
+
+        def start(self):
+            sent.append(self.item["id"])
+            outbox.update_telegram(
+                self.item["id"], configured=True, delivered=True,
+                attempts=1, error=None,
+            )
+
+    monkeypatch.setattr("agy_mcp.notifications.threading.Thread", ImmediateThread)
+    dispatcher = NotificationDispatcher(
+        outbox, token="test-token", chat_id="123", retry_delays=(0.0,)
+    )
+    dispatcher.replay_pending_telegram()
+    assert len(sent) == 105
+    assert len(set(sent)) == 105
+    assert outbox.list_telegram_undelivered()["count"] == 0
