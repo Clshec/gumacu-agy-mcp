@@ -169,3 +169,80 @@ def test_periodic_update_is_sent_only_after_interval(tmp_path: Path, monkeypatch
     assert "ما زالت جلسة Antigravity تعمل" in sent[0]
     assert "Server load investigation" in sent[0]
 
+
+def test_persistent_menu_is_attached_below_the_chat(tmp_path: Path, monkeypatch):
+    store = FakeStore([])
+    bot = make_bot(tmp_path, store)
+    captured = {}
+
+    class Response:
+        is_success = True
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_post(url, json, timeout):
+        captured.update(json)
+        return Response()
+
+    monkeypatch.setattr("agy_mcp.telegram_bot.httpx.post", fake_post)
+    assert bot.send("menu", menu=True) is True
+
+    keyboard = captured["reply_markup"]["keyboard"]
+    labels = {button["text"] for row in keyboard for button in row}
+    assert "📋 حالة الجلسة" in labels
+    assert "💬 آخر رد" in labels
+    assert "➕ جلسة جديدة" in labels
+    assert captured["reply_markup"]["is_persistent"] is True
+
+
+def test_long_reply_is_delivered_in_full_numbered_chunks(tmp_path: Path, monkeypatch):
+    bot = make_bot(tmp_path, FakeStore([]))
+    payloads = []
+
+    class Response:
+        is_success = True
+
+        def json(self):
+            return {"ok": True}
+
+    monkeypatch.setattr(
+        "agy_mcp.telegram_bot.httpx.post",
+        lambda url, json, timeout: payloads.append(json) or Response(),
+    )
+    original = "بداية " + ("محتوى طويل " * 900) + " نهاية مؤكدة"
+    assert bot.send(original, buttons=[[{"text": "آخر رد", "callback_data": "last:1"}]])
+
+    assert len(payloads) > 1
+    reconstructed = "".join(payload["text"].split("\n", 1)[1] for payload in payloads)
+    assert "بداية" in reconstructed
+    assert "نهاية مؤكدة" in reconstructed
+    assert "parse_mode" not in payloads[0]
+    assert "reply_markup" not in payloads[0]
+    assert payloads[-1]["reply_markup"]["inline_keyboard"]
+
+
+def test_advanced_session_browser_has_navigation_and_session_panels(tmp_path: Path, monkeypatch):
+    records = []
+    for index in range(8):
+        item = record(f"job_{index:02d}_abcdefghijkl")
+        item.session_id = f"conversation-{index}"
+        item.antigravity_title = f"Conversation {index}"
+        records.append(item)
+    bot = make_bot(tmp_path, FakeStore(records))
+    sent = []
+    monkeypatch.setattr(
+        bot,
+        "send",
+        lambda text, buttons=None, menu=False: sent.append((text, buttons)) or True,
+    )
+
+    bot._session_browser(0)
+
+    text, buttons = sent[-1]
+    callback_values = [button["callback_data"] for row in buttons for button in row]
+    assert "صفحة 1/2" in text
+    assert any(value.startswith("session:") for value in callback_values)
+    assert "menu:sessions:1" in callback_values
+    assert "menu:home" in callback_values
+

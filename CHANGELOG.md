@@ -8,6 +8,10 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add a persistent Telegram control keyboard and native bot command menu for
+  status, latest reply, running/recent jobs, new conversations, and session
+  selection.
+
 - Turn the private Telegram bot into a durable Antigravity control surface:
   authoritative Antigravity conversation titles, live status/progress, inline
   status/latest-reply/session buttons, `/jobs`, `/status`, `/progress`,
@@ -34,6 +38,8 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Deliver long Antigravity replies as complete, numbered Telegram message
+  chunks instead of truncating their ending at Telegram's message limit.
 - Keep the Telegram conversation title stable across follow-up turns and send
   automatic progress snapshots every three minutes while a Telegram-started
   Antigravity job is still running.

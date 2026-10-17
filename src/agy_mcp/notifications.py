@@ -93,7 +93,7 @@ class NotificationOutbox:
                 "antigravity_title": record.antigravity_title,
                 "status": record.status,
                 "reason_code": reason_code or record.status,
-                "summary": summary[:1000],
+                "summary": summary[:60000],
                 "created_at": record.finished_at or now,
                 "acknowledged_at": None,
                 "telegram": {
@@ -272,7 +272,7 @@ class NotificationDispatcher:
         if self.bot is not None:
             record = self.bot.store.get_job(str(item["job_id"]))
             if record is not None:
-                if record.extra.get("telegram_origin"):
+                if self.bot.is_telegram_job(record):
                     message = self.bot.conversation_reply(
                         record, str(item.get("summary") or ""),
                     )

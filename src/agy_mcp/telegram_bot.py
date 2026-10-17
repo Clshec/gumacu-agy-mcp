@@ -6,6 +6,7 @@ import html
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -23,6 +24,16 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 TERMINAL = {"completed", "failed", "cancelled", "upstream_error", "quota_exhausted", "timeout", "no_final_response"}
 MEANINGFUL = {"conversation_started", "conversation_resumed", "print_starting", "turn_start", "stream_start", "rewind", "quota_exhausted", "timeout", "success", "cancelled"}
+MENU_ACTIONS = {
+    "🎛 لوحة التحكم": "panel",
+    "📋 حالة الجلسة": "active_status",
+    "💬 آخر رد": "active_last",
+    "🔄 المهام الجارية": "jobs",
+    "🕘 المهام الأخيرة": "recent",
+    "➕ جلسة جديدة": "new_help",
+    "📚 اختيار جلسة": "sessions",
+    "❓ المساعدة": "help",
+}
 
 
 def parse_command(text: str) -> tuple[str | None, str]:
@@ -145,6 +156,7 @@ class TelegramBot:
             return
         self._thread = threading.Thread(target=self._poll_loop, name="agy-telegram-control", daemon=True)
         self._thread.start()
+        self._configure_commands()
         self._progress_thread = threading.Thread(
             target=self._progress_loop,
             name="agy-telegram-progress",
@@ -155,20 +167,93 @@ class TelegramBot:
     def stop(self) -> None:
         self._stop.set()
 
-    def send(self, text: str, *, buttons: list[list[dict[str, str]]] | None = None) -> bool:
+    @staticmethod
+    def _menu_keyboard() -> list[list[dict[str, str]]]:
+        return [
+            [{"text": "🎛 لوحة التحكم"}],
+            [{"text": "📋 حالة الجلسة"}, {"text": "💬 آخر رد"}],
+            [{"text": "🔄 المهام الجارية"}, {"text": "🕘 المهام الأخيرة"}],
+            [{"text": "➕ جلسة جديدة"}, {"text": "📚 اختيار جلسة"}],
+            [{"text": "❓ المساعدة"}],
+        ]
+
+    def _configure_commands(self) -> None:
+        commands = [
+            {"command": "menu", "description": "إظهار لوحة التحكم"},
+            {"command": "new", "description": "بدء محادثة جديدة"},
+            {"command": "status", "description": "حالة الجلسة أو المهمة"},
+            {"command": "progress", "description": "آخر تقدم"},
+            {"command": "jobs", "description": "المهام الجارية"},
+            {"command": "recent", "description": "المهام الأخيرة"},
+            {"command": "use", "description": "اختيار جلسة"},
+            {"command": "help", "description": "شرح الاستخدام"},
+        ]
         try:
-            payload: dict[str, Any] = {"chat_id": self.chat_id, "text": text[:3900], "parse_mode": "HTML", "disable_web_page_preview": True}
-            if buttons:
-                payload["reply_markup"] = {"inline_keyboard": buttons}
-            response = httpx.post(
-                f"{self._api}/sendMessage",
-                json=payload,
+            httpx.post(
+                f"{self._api}/setMyCommands",
+                json={"commands": commands},
                 timeout=10.0,
             )
-            return response.is_success and bool(response.json().get("ok"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Telegram command menu setup failed: %s", type(exc).__name__)
+
+    def send(
+        self,
+        text: str,
+        *,
+        buttons: list[list[dict[str, str]]] | None = None,
+        menu: bool = False,
+    ) -> bool:
+        try:
+            chunks = self._telegram_chunks(text)
+            delivered = True
+            for index, chunk in enumerate(chunks):
+                payload: dict[str, Any] = {
+                    "chat_id": self.chat_id,
+                    "text": chunk,
+                    "disable_web_page_preview": True,
+                }
+                if len(chunks) == 1:
+                    payload["parse_mode"] = "HTML"
+                if index == len(chunks) - 1:
+                    if buttons:
+                        payload["reply_markup"] = {"inline_keyboard": buttons}
+                    elif menu:
+                        payload["reply_markup"] = {
+                            "keyboard": self._menu_keyboard(),
+                            "resize_keyboard": True,
+                            "is_persistent": True,
+                            "input_field_placeholder": "اكتب رسالتك إلى Antigravity أو اختر أمرًا",
+                        }
+                response = httpx.post(
+                    f"{self._api}/sendMessage",
+                    json=payload,
+                    timeout=10.0,
+                )
+                delivered = delivered and response.is_success and bool(response.json().get("ok"))
+            return delivered
         except Exception as exc:  # noqa: BLE001
             logger.warning("Telegram send failed: %s", type(exc).__name__)
             return False
+
+    @staticmethod
+    def _telegram_chunks(text: str, limit: int = 3800) -> list[str]:
+        if len(text) <= limit:
+            return [text]
+        plain = html.unescape(re.sub(r"<[^>]+>", "", text))
+        chunks: list[str] = []
+        remaining = plain
+        while remaining:
+            if len(remaining) <= limit:
+                chunks.append(remaining)
+                break
+            cut = max(remaining.rfind("\n", 0, limit), remaining.rfind(" ", 0, limit))
+            if cut < limit // 2:
+                cut = limit
+            chunks.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+        total = len(chunks)
+        return [f"[{index}/{total}]\n{chunk}" for index, chunk in enumerate(chunks, 1)]
 
     def on_job_event(self, record: JobRecord, event: CanonicalEvent) -> None:
         record = self._inherit_conversation_title(record)
@@ -214,6 +299,13 @@ class TelegramBot:
             titles[record.session_id] = record.antigravity_title
             self._save_state()
 
+    def is_telegram_job(self, record: JobRecord) -> bool:
+        jobs = self._state.get("telegram_jobs", {})
+        return bool(
+            record.extra.get("telegram_origin")
+            or (isinstance(jobs, dict) and jobs.get(record.job_id))
+        )
+
     def _progress_loop(self) -> None:
         while not self._stop.wait(min(30.0, self.progress_interval)):
             try:
@@ -224,7 +316,7 @@ class TelegramBot:
     def _send_periodic_updates_once(self, *, now: float | None = None) -> None:
         current = time.time() if now is None else now
         for record in self.store.list_jobs(limit=100):
-            if record.status != "running" or not record.extra.get("telegram_origin"):
+            if record.status != "running" or not self.is_telegram_job(record):
                 continue
             record = self._inherit_conversation_title(record)
             record = refresh_title(self.store, record)
@@ -260,7 +352,7 @@ class TelegramBot:
         record = self._inherit_conversation_title(record)
         record = refresh_title(self.store, record)
         self._remember_conversation_title(record)
-        safe = self.safety.redact(reply)[:3400]
+        safe = self.safety.redact(reply)
         return (
             f"🤖 <b>{html.escape(job_title(record))}</b>\n\n"
             f"{html.escape(safe or 'انتهت الجلسة دون رد نصي.') }"
@@ -287,7 +379,7 @@ class TelegramBot:
             f"المعرّف: <code>{html.escape(record.job_id[-12:])}</code>",
         ]
         if summary:
-            lines.append(f"النتيجة: {html.escape(self.safety.redact(summary)[:700])}")
+            lines.append(f"النتيجة: {html.escape(self.safety.redact(summary))}")
         return "\n".join(lines)
 
     def _poll_loop(self) -> None:
@@ -339,6 +431,10 @@ class TelegramBot:
         text = message.get("text")
         if not isinstance(text, str) or not text.strip():
             return
+        menu_action = MENU_ACTIONS.get(text.strip())
+        if menu_action:
+            self._handle_menu_action(menu_action)
+            return
         command, arg = parse_command(text)
         if command is None:
             self._continue_or_start(arg)
@@ -346,18 +442,38 @@ class TelegramBot:
         handlers = {
             "start": self._help,
             "help": self._help,
+            "menu": self._control_panel,
             "jobs": self._jobs,
             "status": lambda: self._status(arg),
             "progress": lambda: self._progress(arg),
             "recent": self._recent,
             "new": lambda: self._new(arg),
             "use": lambda: self._use(arg),
+            "sessions": self._sessions,
         }
         handler = handlers.get(command)
         if handler is None:
             self.send("أمر غير معروف. استخدم /help")
             return
         handler()
+
+    def _handle_menu_action(self, action: str) -> None:
+        if action == "panel":
+            self._control_panel()
+        elif action == "active_status":
+            self._send_one(str(self._state.get("active_job_id") or ""))
+        elif action == "active_last":
+            self._last_reply(str(self._state.get("active_job_id") or ""))
+        elif action == "jobs":
+            self._jobs()
+        elif action == "recent":
+            self._recent()
+        elif action == "new_help":
+            self.send("لبدء جلسة جديدة اكتب:\n<code>/new رسالتك</code>", menu=True)
+        elif action == "sessions":
+            self._sessions()
+        else:
+            self._help()
 
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         message = callback.get("message") or {}
@@ -380,6 +496,101 @@ class TelegramBot:
             self._last_reply(reference)
         elif action == "use":
             self._use(reference)
+        elif action == "menu":
+            self._handle_panel_callback(reference)
+        elif action == "session":
+            self._session_panel(reference)
+
+    def _handle_panel_callback(self, reference: str) -> None:
+        section, _, page_text = reference.partition(":")
+        if section == "home":
+            self._control_panel()
+        elif section == "sessions":
+            try:
+                page = max(0, int(page_text or "0"))
+            except ValueError:
+                page = 0
+            self._session_browser(page)
+        elif section == "jobs":
+            self._jobs()
+        elif section == "recent":
+            self._recent()
+
+    def _control_panel(self) -> None:
+        active = str(self._state.get("active_job_id") or "")
+        buttons: list[list[dict[str, str]]] = []
+        if active:
+            buttons.append([
+                {"text": "📋 حالة الحالية", "callback_data": f"status:{active[-12:]}"},
+                {"text": "💬 آخر رد", "callback_data": f"last:{active[-12:]}"},
+            ])
+        buttons.extend([
+            [{"text": "📚 المحادثات", "callback_data": "menu:sessions:0"}],
+            [
+                {"text": "🔄 المهام الجارية", "callback_data": "menu:jobs"},
+                {"text": "🕘 المهام الأخيرة", "callback_data": "menu:recent"},
+            ],
+        ])
+        self.send(
+            "<b>🎛 لوحة تحكم Antigravity</b>\n"
+            "اختر القسم الذي تريد فتحه، أو اكتب رسالة مباشرة للجلسة الحالية.",
+            buttons=buttons,
+        )
+
+    def _unique_sessions(self) -> list[JobRecord]:
+        seen: set[str] = set()
+        sessions: list[JobRecord] = []
+        for record in self._records():
+            if record.session_id and record.session_id not in seen:
+                seen.add(record.session_id)
+                sessions.append(record)
+        return sessions
+
+    def _session_browser(self, page: int = 0) -> None:
+        sessions = self._unique_sessions()
+        if not sessions:
+            self.send("لا توجد جلسات Antigravity مسجلة بعد.", menu=True)
+            return
+        page_size = 6
+        last_page = max(0, (len(sessions) - 1) // page_size)
+        page = min(page, last_page)
+        visible = sessions[page * page_size : (page + 1) * page_size]
+        buttons = [
+            [{"text": f"💬 {job_title(record)[:36]}", "callback_data": f"session:{record.job_id[-12:]}"}]
+            for record in visible
+        ]
+        navigation: list[dict[str, str]] = []
+        if page > 0:
+            navigation.append({"text": "⬅️ السابق", "callback_data": f"menu:sessions:{page - 1}"})
+        if page < last_page:
+            navigation.append({"text": "التالي ➡️", "callback_data": f"menu:sessions:{page + 1}"})
+        if navigation:
+            buttons.append(navigation)
+        buttons.append([{"text": "🏠 القائمة الرئيسية", "callback_data": "menu:home"}])
+        self.send(
+            f"<b>محادثات Antigravity</b> — صفحة {page + 1}/{last_page + 1}\n"
+            "اختر محادثة لفتح أدواتها:",
+            buttons=buttons,
+        )
+
+    def _session_panel(self, reference: str) -> None:
+        record, _ = resolve_job(self._records(), reference)
+        if record is None:
+            self.send("لم أجد هذه المحادثة.")
+            return
+        progress, _ = safe_progress(self.store.read_events(record.job_id))
+        buttons = [
+            [
+                {"text": "📋 تحديث الحالة", "callback_data": f"status:{record.job_id[-12:]}"},
+                {"text": "💬 آخر رد", "callback_data": f"last:{record.job_id[-12:]}"},
+            ],
+            [{"text": "➡️ اختيارها للمتابعة", "callback_data": f"use:{record.job_id[-12:]}"}],
+            [{"text": "⬅️ كل المحادثات", "callback_data": "menu:sessions:0"}],
+        ]
+        self.send(
+            self._format_record(record, progress=progress, heading="💬 أدوات المحادثة"),
+            buttons=buttons,
+        )
 
     def _last_reply(self, reference: str) -> None:
         record, _ = resolve_job(self._records(), reference)
@@ -391,7 +602,7 @@ class TelegramBot:
         if not text:
             self.send("لم يصل رد نصي من Antigravity لهذه المهمة بعد.", buttons=self._job_buttons(record))
             return
-        safe = self.safety.redact(text)[:3400]
+        safe = self.safety.redact(text)
         self.send(f"<b>آخر رد من Antigravity</b>\nالاسم: <b>{html.escape(job_title(record))}</b>\n\n{html.escape(safe)}", buttons=self._job_buttons(record))
 
     def _records(self) -> list[JobRecord]:
@@ -405,7 +616,10 @@ class TelegramBot:
         return refreshed
 
     def _help(self) -> None:
-        self.send("<b>أوامر Gumacu Antigravity</b>\n/jobs المهام الجارية\n/status ملخص الجارية\n/status الاسم أو الرقم\n/progress الاسم أو الرقم\n/recent أحدث النتائج\n/new نص الرسالة — جلسة جديدة\n/use الاسم أو الرقم — اختيار جلسة\nأي نص عادي — إرساله للجلسة المختارة")
+        self.send("<b>أوامر Gumacu Antigravity</b>\n/jobs المهام الجارية\n/status ملخص الجارية\n/status الاسم أو الرقم\n/progress الاسم أو الرقم\n/recent أحدث النتائج\n/new نص الرسالة — جلسة جديدة\n/use الاسم أو الرقم — اختيار جلسة\nأي نص عادي — إرساله للجلسة المختارة", menu=True)
+
+    def _sessions(self) -> None:
+        self._session_browser(0)
 
     def _jobs(self) -> None:
         active = [r for r in self._records() if r.status == "running"]
@@ -491,6 +705,9 @@ class TelegramBot:
             self.send(f"تعذر بدء الرسالة: {html.escape(response.error or 'خطأ غير معروف')}")
             return
         self._state["active_job_id"] = response.job_id
+        telegram_jobs = self._state.setdefault("telegram_jobs", {})
+        if isinstance(telegram_jobs, dict):
+            telegram_jobs[response.job_id] = True
         if session_id:
             self._state["active_session_id"] = session_id
         self._save_state()
