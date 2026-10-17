@@ -1,4 +1,4 @@
-name: ChatGPT MCP client refresh release gate
+name: Gumacu MCP release - verify ChatGPT tool refresh
 
 on:
   push:
@@ -7,62 +7,38 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
-  group: chatgpt-mcp-client-refresh-gate
+  group: gumacu-mcp-tool-refresh
   cancel-in-progress: false
 
 jobs:
-  remind:
+  release-reminder:
+    name: ChatGPT MCP post-deploy verification reminder
     runs-on: ubuntu-latest
     steps:
-      - name: Open or update ChatGPT MCP refresh gate
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const sha = context.sha;
-            const title = "[Release gate] Verify ChatGPT MCP tool refresh after main update";
-            const guide = "https://github.com/" + owner + "/" + repo + "/blob/main/docs/chatgpt-mcp-client-refresh.md";
-            const release = "https://github.com/" + owner + "/" + repo + "/commit/" + sha;
-            const reminder = [
-              "Release: " + release,
-              "",
-              "ChatGPT may retain an approved/frozen MCP action snapshot. A GitHub push, MCP restart, or tunnel restart does NOT prove client tools refreshed.",
-              "",
-              "- [ ] Record deployed runtime SHA and focused tests",
-              "- [ ] Verify production MCP endpoint tools/list contains expected tools (not just agy_doctor internal registry)",
-              "- [ ] Refresh/review/enable updated actions in ChatGPT app/connection settings where supported",
-              "- [ ] Confirm tools appear in a new ChatGPT conversation (including agy_devices and device start/status/read/result/continue)",
-              "- [ ] Verify harmless Windows E2E and Telegram terminal notification when applicable",
-              "- [ ] Record acceptance evidence and close this issue only after client verification",
-              "",
-              "Guide: " + guide,
-              "No API keys, OAuth credentials, Telegram tokens, or private URLs in this issue."
-            ].join("\n");
-            const existing = (await github.paginate(github.rest.issues.listForRepo, {
-              owner, repo, state: "open", per_page: 100
-            })).find(item => !item.pull_request && item.title === title);
-            let issue;
-            if (existing) {
-              issue = existing;
-              const recent = await github.rest.issues.listComments({
-                owner, repo, issue_number: issue.number, per_page: 100
-              });
-              const alreadyNoted = recent.data.some(item => (item.body || "").includes(release));
-              if (!alreadyNoted) {
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: issue.number, body: reminder
-                });
-              }
-            } else {
-              const created = await github.rest.issues.create({
-                owner, repo, title, body: reminder
-              });
-              issue = created.data;
-            }
-            await core.summary
-              .addHeading("ChatGPT MCP tool refresh: human acceptance required")
-              .addRaw("Commit: " + release + "\n\nTracking issue: " + issue.html_url + "\n\nFollow the runbook before closing the release gate.")
-              .write();
+      - name: Show release gate and historical tunnel-first recovery
+        shell: bash
+        run: |
+          echo "::warning title=Gumacu MCP tool visibility::Verify running MCP version, clean gumacu-netcup Windows tunnel restart where stale, ChatGPT-facing tools/list and actual client tool availability. A push is NOT deployment verification."
+          {
+            echo "## Gumacu MCP post-deploy tool refresh — ACTION REQUIRED"
+            echo
+            echo "**Commit:** [${GITHUB_SHA}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})"
+            echo
+            echo "This is a release verification REMINDER, not proof of successful deployment."
+            echo
+            echo "- [ ] Verify actual running MCP server version and target deployment SHA."
+            echo "- [ ] Verify Windows \`gumacu-netcup\` tunnel profile, process ownership and readiness."
+            echo "- [ ] If stale, cleanly restart ONLY the matching tunnel/client/child processes and verify fresh MCP handshake."
+            echo "- [ ] Check **client-facing** authenticated MCP \`tools/list\`, not only \`agy_doctor\` or local stdio."
+            echo "- [ ] Confirm changed tools can actually be invoked by ChatGPT (otherwise record PENDING)."
+            echo "- [ ] When applicable verify windows-main start/continue/status/read/result and Telegram."
+            echo "- [ ] Record PASS/FAIL/PENDING with evidence; don't assume user must edit ChatGPT settings."
+            echo
+            echo "Proven server-side recovery (2026-10-14): clean restart of stale Windows tunnel-client.exe / matching child SSH/Python processes through \`deploy/start-private-tunnel.ps1\` using profile \`gumacu-netcup\`. Do NOT kill unrelated processes."
+            echo
+            echo "**[Troubleshooting and acceptance runbook](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/main/docs/chatgpt-mcp-client-refresh.md)**"
+            echo
+            echo "Repo Issues are disabled; this GitHub Actions summary and warning are the release marker."
+          } >> "$GITHUB_STEP_SUMMARY"
