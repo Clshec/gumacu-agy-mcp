@@ -341,6 +341,7 @@ def test_agy_start_status_read_cycle(reset_state, tmp_path: Path):
     )
     assert started["success"] is True
     assert started["status"] == "running"
+    assert any("No active MCP event subscription" in w for w in started["warnings"])
     job_id = started["job_id"]
     assert _wait_until(
         lambda: server.agy_status_tool(job_id)["record"]["status"] == "completed",
@@ -353,6 +354,8 @@ def test_agy_start_status_read_cycle(reset_state, tmp_path: Path):
     assert status["progress"]["event_count"] == 3
     assert status["progress"]["phase"] == "success"
     assert status["progress"]["detail_level"] == "operational"
+    assert status["progress"]["event_subscription_count"] == 0
+    assert status["progress"]["automatic_resume_available"] is False
 
     read = server.agy_read_tool(job_id)
     assert read["success"] is True

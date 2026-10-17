@@ -8,6 +8,9 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Report event-subscription availability in every live progress response and
+  warn at job start when no subscription exists, so clients cannot mistake
+  server event support for a verified automatic-resume path.
 - Detect Antigravity quota exhaustion across gRPC `RESOURCE_EXHAUSTED`, quota,
   usage-limit, rate-limit, credit, and capacity messages; finalize the job as
   `quota_exhausted` and deliver a signed `job.failed` event with the stable

@@ -292,7 +292,9 @@ try:
             "occupies its request and cannot be inspected reliably while running. "
             "Use ``agy_status`` to answer progress questions from its progress field, "
             "then ``agy_result`` after completion. Use ``agy`` only for quick one-shot "
-            "prompts, and "
+            "prompts. Never promise automatic resume unless an event subscription "
+            "was actually created; agy_start warnings and agy_status.progress report "
+            "subscription availability. Use "
             "``agy_doctor`` to check the environment."
         ),
     )
@@ -307,7 +309,9 @@ except TypeError:
             "occupies its request and cannot be inspected reliably while running. "
             "Use ``agy_status`` to answer progress questions from its progress field, "
             "then ``agy_result`` after completion. Use ``agy`` only for quick one-shot "
-            "prompts, and "
+            "prompts. Never promise automatic resume unless an event subscription "
+            "was actually created; agy_start warnings and agy_status.progress report "
+            "subscription availability. Use "
             "``agy_doctor`` to check the environment."
         ),
     )
@@ -749,6 +753,13 @@ def agy_start_tool(
         response = supervisor.start(request, job_id=job_id)
     except Exception as exc:  # noqa: BLE001 - top-level guard
         return _structured_failure(safety, exc, cwd=effective_cwd)
+    subscription_count = len(_subscription_store.list_all()) if _subscription_store else 0
+    if subscription_count == 0:
+        response.warnings.append(
+            "No active MCP event subscription exists. This job cannot automatically "
+            "resume ChatGPT; use agy_status manually or subscribe from an eligible "
+            "ChatGPT Work/Cloud chat before promising automatic notification."
+        )
     return response
 
 
@@ -790,7 +801,14 @@ def agy_status_tool(job_id: str) -> StatusToolResponse:
     return StatusToolResponse(
         success=True,
         record=record,
-        progress=_build_progress_summary(record, events, safety),
+        progress=_build_progress_summary(
+            record,
+            events,
+            safety,
+            event_subscription_count=(
+                len(_subscription_store.list_all()) if _subscription_store else 0
+            ),
+        ),
     )
 
 
@@ -817,6 +835,8 @@ def _build_progress_summary(
     record: Any,
     events: list[Any],
     safety: SafetyPolicy,
+    *,
+    event_subscription_count: int = 0,
 ) -> dict[str, Any]:
     """Build a bounded, redacted operational view without exposing raw logs."""
     prompt = ""
@@ -871,6 +891,8 @@ def _build_progress_summary(
         "event_count": len(events),
         "recent_activity": recent,
         "detail_level": "operational",
+        "event_subscription_count": event_subscription_count,
+        "automatic_resume_available": event_subscription_count > 0,
     }
 
 
