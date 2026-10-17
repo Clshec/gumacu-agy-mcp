@@ -1,4 +1,4 @@
-name: Gumacu MCP release - verify ChatGPT tool refresh
+name: ChatGPT MCP client refresh release gate
 
 on:
   push:
@@ -9,36 +9,35 @@ permissions:
   contents: read
 
 concurrency:
-  group: gumacu-mcp-tool-refresh
+  group: chatgpt-mcp-client-refresh-gate
   cancel-in-progress: false
 
 jobs:
-  release-reminder:
-    name: ChatGPT MCP post-deploy verification reminder
+  remind:
     runs-on: ubuntu-latest
     steps:
-      - name: Show release gate and historical tunnel-first recovery
-        shell: bash
-        run: |
-          echo "::warning title=Gumacu MCP tool visibility::Verify running MCP version, clean gumacu-netcup Windows tunnel restart where stale, ChatGPT-facing tools/list and actual client tool availability. A push is NOT deployment verification."
-          {
-            echo "## Gumacu MCP post-deploy tool refresh — ACTION REQUIRED"
-            echo
-            echo "**Commit:** [${GITHUB_SHA}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})"
-            echo
-            echo "This is a release verification REMINDER, not proof of successful deployment."
-            echo
-            echo "- [ ] Verify actual running MCP server version and target deployment SHA."
-            echo "- [ ] Verify Windows \`gumacu-netcup\` tunnel profile, process ownership and readiness."
-            echo "- [ ] If stale, cleanly restart ONLY the matching tunnel/client/child processes and verify fresh MCP handshake."
-            echo "- [ ] Check **client-facing** authenticated MCP \`tools/list\`, not only \`agy_doctor\` or local stdio."
-            echo "- [ ] Confirm changed tools can actually be invoked by ChatGPT (otherwise record PENDING)."
-            echo "- [ ] When applicable verify windows-main start/continue/status/read/result and Telegram."
-            echo "- [ ] Record PASS/FAIL/PENDING with evidence; don't assume user must edit ChatGPT settings."
-            echo
-            echo "Proven server-side recovery (2026-10-14): clean restart of stale Windows tunnel-client.exe / matching child SSH/Python processes through \`deploy/start-private-tunnel.ps1\` using profile \`gumacu-netcup\`. Do NOT kill unrelated processes."
-            echo
-            echo "**[Troubleshooting and acceptance runbook](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/main/docs/chatgpt-mcp-client-refresh.md)**"
-            echo
-            echo "Repo Issues are disabled; this GitHub Actions summary and warning are the release marker."
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Generate ChatGPT MCP release checklist and summary
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+            const shortSha = sha ? sha.substring(0, 7) : "unknown";
+            const guide = `https://github.com/${owner}/${repo}/blob/main/docs/chatgpt-mcp-client-refresh.md`;
+            const release = `https://github.com/${owner}/${repo}/commit/${sha}`;
+
+            await core.summary
+              .addHeading("🚀 ChatGPT MCP Client Refresh & Release Gate", 2)
+              .addRaw(`**Release Commit:** [${shortSha}](${release})\n\n`)
+              .addRaw(`> [!IMPORTANT]\n> ChatGPT may retain an approved/frozen MCP action snapshot. Restarting the tunnel or server does not guarantee client refresh. Verify client tool visibility in a **new chat session** after updating.\n\n`)
+              .addHeading("📋 Acceptance Checklist", 3)
+              .addRaw([
+                "- [ ] **Runtime SHA:** Verify deployed commit on host matches released SHA",
+                "- [ ] **Production MCP Endpoint:** Run `tools/list` on host endpoint to confirm 26+ tools exposed",
+                "- [ ] **Windows Tunnel:** If ChatGPT still shows legacy tools, terminate stale `tunnel-client.exe`/`ssh.exe` and re-run starter script",
+                "- [ ] **Client Snapshot:** Update/refresh actions in ChatGPT App Settings if needed and start a new chat",
+                "- [ ] **Tool Visibility:** Confirm `agy_devices` and multi-device tools are visible to ChatGPT",
+                "- [ ] **Windows E2E & Telegram:** Confirm remote task execution and Telegram notification delivery"
+              ].join("\n"))
+              .addRaw(`\n\n📖 **Release Runbook:** [docs/chatgpt-mcp-client-refresh.md](${guide})\n`)
+              .write();

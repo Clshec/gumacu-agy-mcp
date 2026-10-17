@@ -509,3 +509,13 @@ def test_release_cli_preserves_required_skills_when_source_and_artifact_are_miss
 
     assert result.returncode == expected_code
     assert result.stderr == expected_stderr
+
+
+def test_chatgpt_refresh_workflow_does_not_use_disabled_github_issues():
+    workflow_path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "chatgpt-mcp-refresh-reminder.yml"
+    assert workflow_path.is_file(), "Workflow file must exist"
+    content = workflow_path.read_text(encoding="utf-8")
+    assert "issues: write" not in content, "Workflow must not request issues: write because Issues are disabled"
+    assert "github.rest.issues" not in content, "Workflow must not invoke github.rest.issues API"
+    assert "core.summary" in content, "Workflow must use core.summary for job summaries"
+

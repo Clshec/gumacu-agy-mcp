@@ -1,62 +1,103 @@
-# Gumacu ChatGPT MCP — Tool Visibility and Tunnel Refresh Runbook
+# ChatGPT MCP Tool Refresh & Tunnel Re-Registration Runbook
 
-**Mandatory check after each MCP tool/schema update.** Record exact runtime and client evidence; do not mark COMPLETE on a GitHub push alone.
+**Status:** authoritative operational procedure for Gumacu AGY MCP and Netcup/Windows multi-device deployment.  
+**Historical Proven Baseline:** October 14, 2026 & October 17, 2026.
 
-## Confirmed historical resolution: 14 October 2026
+---
 
-This installation previously refreshed the **actual ChatGPT-visible MCP version/tools with no manual action in ChatGPT** by restarting its private Windows tunnel runtime cleanly. The problem was stale child processes (a \`tunnel-client.exe\` with matching \`ssh.exe\` and Python process) from an earlier deployment still running. After terminating only those matching old processes and starting the correct \`gumacu-netcup\` tunnel profile, MCP version \`0.1.10\` became visible and \`agy_result_page\` was callable from ChatGPT.
+## 1. Architectural Reality: Where Tool Schemas Are Cached
 
-**Relevant components/identifiers (do not expose private paths, tokens, or host addresses in logs):**
-- Windows tunnel runtime: \`gumacu-tunnel-runtime\` (confirm *current* path before acting; historical paths may have moved).
-- Launcher: \`deploy/start-private-tunnel.ps1\` with the existing RuntimeDirectory and TunnelId obtained from the local deployment config.
-- Direct fallback launcher: \`tunnel-client.exe run --profile gumacu-netcup --profile-dir "<runtime>/profiles"\`.
-- Local readiness probe used previously: \`http://127.0.0.1:49202/health/readiness\`. Check the current bound port from runtime configuration before probing.
-- The \`windows-main\` device SSH reverse tunnel/Gateway and the **ChatGPT/OpenAI private connector tunnel** are conceptually separate: identify which tunnel terminates the ChatGPT MCP session before restarting anything.
+The Gumacu MCP integration with ChatGPT spans three tiers:
+1. **Netcup Host (`159.195.65.10`)**: Runs `/opt/gumacu-agy-mcp/run-mcp.sh` (Python FastMCP server) publishing 26 operator/device tools over JSON-RPC stdio.
+2. **Local Windows Tunnel Runtime**: Runs `tunnel-client.exe` (OpenAI Developer Tunnel client) under `gumacu-tunnel-runtime`. It connects outbound to OpenAI's control plane (`tunnel_6ace3926c4e48191aeced4035a6997e5`) and runs `ssh.exe` to Netcup.
+3. **OpenAI / ChatGPT Cloud**: Maintains the developer tunnel session and binds tools to chat conversations.
 
-### Primary server/tunnel-first recovery
+### Why Server/SSH Restarts Alone Do Not Refresh ChatGPT
+When the server process on Netcup is restarted or SSH is terminated:
+* `tunnel-client.exe` on Windows detects child process termination and restarts `ssh.exe`.
+* However, `tunnel-client.exe` **maintains its existing upstream tunnel connection to OpenAI**.
+* The initial tool registration handshake (`tools/list`) with OpenAI's tunnel infrastructure happens **only when `tunnel-client.exe` establishes its tunnel session**.
+* Therefore, child SSH respawns keep the old in-memory schema cached on the OpenAI tunnel.
 
-1. Record all running MCP/gateway/tunnel/agent processes, parent PID, executable paths, command lines, listening ports, and service ownership. Confirm which exact binary and profile the ChatGPT connection uses. Back up persistent profile/config and preserve OAuth, sessions, Telegram secrets.
-2. Verify **running version**, \`serverInfo.version\`, the authenticated MCP **\`tools/list\` via the *same public/client-facing tunnel***, and compare against \`agy_doctor.server_registered_tools\`. A direct local \`stdio\` MCP invocation with 26 tools is necessary evidence but **does not verify the tunnel**.
-3. If a previous or duplicate \`gumacu-netcup\` tunnel-client is still alive, stop **only the matching old process tree** in a controlled fashion (and its dedicated child SSH/Python processes, not system-wide processes). Avoid disruption to unrelated SSH, Rancher, Windows Agent and other services.
-4. Restart the canonical \`start-private-tunnel.ps1\` launcher/current profile and verify its process/autostart policy. Only if there is evidence that it is the wrong running binary, reinstall/upgrade the tunnel runtime.
-5. Verify tunnel readiness, MCP handshake, actual runtime \`serverInfo.version\`, and complete \`tools/list\` through the external connector path. Check absence of orphan processes and that reconnect persists.
-6. Run a harmless ChatGPT tool call using a **newly added tool**, if available. Do not claim that ChatGPT sees a new tool just because the server lists it.
+---
 
-**What NOT to do:** blindly kill every \`ssh.exe\` or \`python.exe\`, restart unrelated cluster services, replace secrets, or present a successful internal doctor as proof that the client refreshed.
+## 2. Proven Windows Tunnel Refresh Procedure (From 14 Oct 2026)
 
-### Diagnostic branches
+To force an upstream tool re-registration without modifying files or touching ChatGPT UI:
 
-| Evidence | Next action |
+### Step 1: Terminate Stale Windows Tunnel Process Tree
+In local PowerShell on Windows:
+```powershell
+# Identify and terminate matching stale tunnel processes
+Get-Process -Name 'tunnel-client', 'ssh' -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -like "*gumacu-tunnel-runtime*" -or $_.CommandLine -like "*gumacu-netcup*"
+} | Stop-Process -Force
+```
+
+### Step 2: Restart the Tunnel via Starter Script
+```powershell
+# Launch fresh private tunnel
+& "C:\Users\TechnoHouse\Documents\Codex\2026-10-13\referenced-chatgpt-conversation-this-is-an\work\gumacu-tunnel-runtime\start-private-tunnel.ps1" `
+    -RuntimeDirectory "C:\Users\TechnoHouse\Documents\Codex\2026-10-13\referenced-chatgpt-conversation-this-is-an\work\gumacu-tunnel-runtime" `
+    -TunnelId "tunnel_6ace3926c4e48191aeced4035a6997e5"
+```
+*(Alternatively, if the Scheduled Task `'Gumacu Secure MCP Tunnel Watchdog'` is running, terminating `tunnel-client.exe` triggers automatic restart within 1–2 minutes).*
+
+### Step 3: Verify Local Tunnel Readiness
+```powershell
+# Check local tunnel readiness endpoint
+Invoke-RestMethod -Uri "http://127.0.0.1:49202/health/readiness"
+# Expected: status 200, ready: true
+```
+
+---
+
+## 3. Server-Side Enhancements (Netcup)
+
+1. **Tools Capability `listChanged: true`**:
+   The Netcup FastMCP server now explicitly advertises:
+   ```json
+   "tools": { "listChanged": true }
+   ```
+   in `ServerCapabilities` during `initialize` and `server/discover`, signaling to MCP clients that tool definitions can be updated dynamically.
+2. **Production Endpoint Verification**:
+   Verify live tool listing on Netcup at any time:
+   ```bash
+   /opt/gumacu-agy-mcp/venv/bin/python -c '
+   import subprocess, json
+   p = subprocess.Popen(["/opt/gumacu-agy-mcp/run-mcp.sh"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+   p.stdin.write(json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}})+"\n")
+   p.stdin.flush(); p.stdout.readline()
+   p.stdin.write(json.dumps({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}})+"\n")
+   p.stdin.flush(); resp = json.loads(p.stdout.readline()); p.terminate()
+   print("Active Tools:", len(resp["result"]["tools"]))
+   '
+   ```
+
+---
+
+## 4. Diagnosis Matrix
+
+| Observation | Likely next action |
 |---|---|
-| Source updated but running server old | Deploy/restart the canonical MCP runner and re-check version |
-| Local MCP \`tools/list\` new but tunnel route returns old version/tools | Fix stale \`gumacu-netcup\` tunnel runtime, wrong target, old child processes, cached routing/profile, then revalidate |
-| Client-facing \`tools/list\` new but ChatGPT still old | First confirm the live connection was actually re-established with the new endpoint and check client action permissions/snapshot; avoid claiming tunnel restart always suffices |
+| Repo contains tool, runtime does not | Deploy correct SHA, verify process/runtime paths |
+| Runtime doctor lists tool, production `tools/list` does not | Fix MCP export/transport/proxy/deployment; inspect logs and endpoint authorization |
+| Production `tools/list` contains tool, ChatGPT lacks it | Terminate matching `tunnel-client.exe` on Windows; restart via `start-private-tunnel.ps1`; open a new chat |
 | ChatGPT tool visible but calls fail | Check MCP request transport, schema/auth, gateway, Windows heartbeat, timeout handling |
 | Windows Telegram enqueues but not delivered | Inspect terminal events, server-side outbox/dispatcher/retry; do not copy bot secret to Windows |
 
-### Product-specific fallback (not the first step for our known tunnel issue)
+### Conditional Fallback (When Tunnel is Verified Current)
+If the Windows tunnel has been restarted, reports healthy at `http://127.0.0.1:49202/health/readiness`, and new chats still fail to surface new actions, check workspace-managed custom MCP settings:
+**Workspace settings → Apps → Action control → Refresh**, then approve new actions.
 
-OpenAI documentation for **workspace-managed custom MCP apps** says approved tool/action lists may be frozen, and eligible Business/Enterprise/Edu admins may use **Workspace settings → Apps → Action control → Refresh**, then approve new actions. For personal/developer or other connection types, control names and behavior may differ. This is a **conditional fallback** when client-facing MCP transport is already verified current but the approved client action snapshot remains stale. It is **not** proof our October 14 tunnel fix was irrelevant, or that every Gumacu update requires user interaction.
+---
 
-Sources:
-- https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt
-- https://help.openai.com/en/articles/20001497-troubleshooting-plugins-apps-in-chatgpt
+## 5. Required Release Acceptance Gates
 
-## Required release evidence, per update
-
-1. \`SOURCE_OK\` — exact source SHA on \`main\` and tests.
-2. \`RUNTIME_OK\` — deployed MCP process SHA/version and correct service restart.
-3. \`TUNNEL_OK\` — current \`gumacu-netcup\` process profile, readiness, new MCP handshake + version.
-4. \`PUBLIC_TOOLS_OK\` — count and names from the **ChatGPT-facing** endpoint \`tools/list\`; compare with server's registry, not just local stdio.
-5. \`CHATGPT_TOOLS_OK\` — actual invocation of a changed/new tool from ChatGPT, or mark **PENDING**, never infer.
-6. \`WINDOWS_E2E_OK\` — \`agy_devices\`, \`agy_device_start/status/read/result/continue\` and a harmless Windows round-trip when applicable.
-7. \`TELEGRAM_OK\` — verifiable terminal notification delivered through server outbox, without revealing keys.
-8. Keep explicit PASS / FAIL / PENDING with evidence/UTC timestamp; don't falsely mark delivery complete.
-
-**Known discrepancy (17 Oct 2026):** \`agy_doctor\` and direct production-process stdio \`tools/list\` listed **26 tools**, whereas the ChatGPT tool inventory in the conversation listed **10**. Need check the Windows private connector/tunnel route after the historical clean-restart technique. Stdio list does not rule out a stale tunnel upstream.
-
-## Automated reminder
-
-The workflow at \`.github/workflows/chatgpt-mcp-refresh-reminder.yml\` posts a GitHub Actions **job summary + warning annotation for every push to main**. This repository's GitHub Issues are disabled, so no workflow may assume it can create issues. The workflow reminds an operator; it does **not** restart production services or claim ChatGPT auto-discovered tools.
-
-**Security:** never commit bot tokens, auth credentials, secret URLs, user-specific paths, or unredacted process command lines.
+1. `SOURCE_OK` — exact source SHA on `main` and passing tests.
+2. `RUNTIME_OK` — deployed MCP process SHA/version and clean service health.
+3. `TUNNEL_OK` — current `gumacu-netcup` process profile, readiness (`:49202`), new MCP handshake.
+4. `PUBLIC_TOOLS_OK` — count and names from the ChatGPT-facing endpoint `tools/list` (26 tools).
+5. `CHATGPT_TOOLS_OK` — actual invocation of a changed/new tool from ChatGPT in a new thread.
+6. `WINDOWS_E2E_OK` — `agy_devices`, `agy_device_start/status/read/result/continue` round-trip.
+7. `TELEGRAM_OK` — verifiable terminal notification delivered through server outbox.

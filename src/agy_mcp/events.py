@@ -990,6 +990,8 @@ def setup_events_protocol(
     def _get_capabilities_with_events(notification_options, experimental_capabilities):
         caps = orig_get_capabilities(notification_options, experimental_capabilities)
         caps.events = {}
+        if caps.tools is not None:
+            caps.tools = mcp_types.ToolsCapability(listChanged=True)
         return caps
 
     server.get_capabilities = _get_capabilities_with_events
@@ -1015,7 +1017,7 @@ def setup_events_protocol(
                 resultType="complete",
                 supportedVersions=[PROTOCOL_VERSION_2026_07_28],
                 capabilities={
-                    "tools": {},
+                    "tools": {"listChanged": True},
                     "events": {},
                 },
             )
