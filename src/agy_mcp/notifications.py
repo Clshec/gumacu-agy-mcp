@@ -125,30 +125,28 @@ class NotificationOutbox:
                 "has_more": next_cursor < len(pending),
             }
 
-    def list_telegram_undelivered(self, *, cursor: int = 0, limit: int = 20) -> dict[str, Any]:
-        """List Telegram deliveries independently of ChatGPT acknowledgement.
+    def snapshot_telegram_undelivered(self) -> list[dict[str, Any]]:
+        """Atomically snapshot Telegram deliveries, independent of chat ACKs."""
+        with self._lock:
+            return [
+                dict(item)
+                for item in sorted(self._records.values(), key=lambda item: item["created_at"])
+                if not item.get("telegram", {}).get("delivered")
+            ]
 
-        An acknowledgement only means that a notification was surfaced to the
-        caller; it must never prevent Telegram delivery after a restart.
-        """
+    def list_telegram_undelivered(self, *, cursor: int = 0, limit: int = 20) -> dict[str, Any]:
+        """Page Telegram deliveries independently of ChatGPT acknowledgement."""
         if cursor < 0 or not 1 <= limit <= 100:
             raise ValueError("cursor must be non-negative and limit must be between 1 and 100")
-        with self._lock:
-            undelivered = sorted(
-                (
-                    item for item in self._records.values()
-                    if not item.get("telegram", {}).get("delivered")
-                ),
-                key=lambda item: item["created_at"],
-            )
-            page = undelivered[cursor : cursor + limit]
-            next_cursor = cursor + len(page)
-            return {
-                "notifications": [dict(item) for item in page],
-                "count": len(page),
-                "next_cursor": next_cursor if next_cursor < len(undelivered) else None,
-                "has_more": next_cursor < len(undelivered),
-            }
+        undelivered = self.snapshot_telegram_undelivered()
+        page = undelivered[cursor : cursor + limit]
+        next_cursor = cursor + len(page)
+        return {
+            "notifications": page,
+            "count": len(page),
+            "next_cursor": next_cursor if next_cursor < len(undelivered) else None,
+            "has_more": next_cursor < len(undelivered),
+        }
 
     def acknowledge(self, notification_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -265,18 +263,9 @@ class NotificationDispatcher:
     def replay_pending_telegram(self) -> None:
         """Retry undelivered durable notifications after a process restart."""
 
-        # Snapshot all pending deliveries before starting workers. Otherwise a
-        # fast worker can shrink a filtered page between cursor reads and cause
-        # later notifications to be skipped.
-        pending: list[dict[str, Any]] = []
-        cursor = 0
-        while True:
-            page = self.outbox.list_telegram_undelivered(cursor=cursor, limit=100)
-            pending.extend(page["notifications"])
-            if page["next_cursor"] is None:
-                break
-            cursor = page["next_cursor"]
-        for item in pending:
+        # Snapshot atomically before starting workers: a fast delivery must
+        # not shrink the filtered collection during cursor-based pagination.
+        for item in self.outbox.snapshot_telegram_undelivered():
             thread = threading.Thread(
                 target=self._deliver_telegram,
                 args=(item,),
