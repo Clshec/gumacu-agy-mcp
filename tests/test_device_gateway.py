@@ -90,6 +90,38 @@ def test_persistence(tmp_path: Path) -> None:
     second.conn.close()
 
 
+def test_remote_start_job_id_not_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gateway call IDs become stable, unique, non-secret-shaped worker IDs."""
+    from agy_mcp import server
+    from agy_mcp.safety import SafetyPolicy
+
+    seen: list[str] = []
+
+    class Response:
+        def model_dump(self, *, mode: str) -> dict:
+            assert mode == "json"
+            return {"success": True, "job_id": seen[-1], "status": "running"}
+
+    def fake_start(**kwargs: object) -> Response:
+        identifier = kwargs["job_id"]
+        assert isinstance(identifier, str)
+        assert len(identifier) < 40
+        assert server._validate_job_id(SafetyPolicy(), identifier) is None
+        seen.append(identifier)
+        return Response()
+
+    monkeypatch.setattr(server, "agy_start_tool", fake_start)
+    call1 = "call_" + "a" * 32
+    call2 = "call_" + "b" * 32
+    first = dispatch("start", {"PROMPT": "harmless"}, call1)
+    repeated = dispatch("start", {"PROMPT": "harmless"}, call1)
+    second = dispatch("start", {"PROMPT": "harmless"}, call2)
+    assert first["success"] and first["status"] == "running"
+    assert first["job_id"] == repeated["job_id"]
+    assert first["job_id"] != second["job_id"]
+    assert first["job_id"] == "job_r_" + "a" * 32
+
+
 def test_agent_completion_cache(tmp_path: Path) -> None:
     cache = AgentCache(tmp_path / "agent.sqlite")
     cache.save("call_" + "a" * 32, {"success": True, "job_id": "job_1"})
