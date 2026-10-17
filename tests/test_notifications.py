@@ -94,3 +94,67 @@ def test_telegram_retries_and_records_safe_failure(tmp_path: Path, monkeypatch):
     assert stored["telegram"]["attempts"] == 3
     assert stored["telegram"]["last_error"] == "TimeoutException"
     assert "secret-token" not in outbox.path.read_text(encoding="utf-8")
+
+
+def test_telegram_replay_survives_chat_acknowledgement(tmp_path: Path, monkeypatch):
+    """Acknowledging in ChatGPT must not lose an undelivered Telegram alert."""
+    outbox = NotificationOutbox(tmp_path / "notifications.json")
+    item = outbox.record(_record(), summary="important result")
+    outbox.acknowledge(item["id"])
+
+    assert outbox.list_pending()["count"] == 0
+    assert [n["id"] for n in outbox.list_telegram_undelivered()["notifications"]] == [
+        item["id"]
+    ]
+
+    scheduled: list[str] = []
+
+    class CapturingThread:
+        def __init__(self, *, target, args, name, daemon):
+            scheduled.append(args[0]["id"])
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("agy_mcp.notifications.threading.Thread", CapturingThread)
+    dispatcher = NotificationDispatcher(
+        outbox, token="", chat_id="", retry_delays=(0.0,)
+    )
+    dispatcher.replay_pending_telegram()
+    assert scheduled == [item["id"]]
+
+    outbox.update_telegram(
+        item["id"], configured=True, delivered=True, attempts=1, error=None
+    )
+    assert outbox.list_telegram_undelivered()["count"] == 0
+
+
+def test_telegram_replay_schedules_all_pages_even_when_delivery_is_fast(
+    tmp_path: Path, monkeypatch
+):
+    outbox = NotificationOutbox(tmp_path / "notifications.json")
+    for i in range(105):
+        record = _record()
+        record.job_id = f"job_1234567890_{i:012x}"
+        outbox.record(record, summary=f"result {i}")
+    sent: list[str] = []
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, name, daemon):
+            self.item = args[0]
+
+        def start(self):
+            sent.append(self.item["id"])
+            outbox.update_telegram(
+                self.item["id"], configured=True, delivered=True,
+                attempts=1, error=None,
+            )
+
+    monkeypatch.setattr("agy_mcp.notifications.threading.Thread", ImmediateThread)
+    dispatcher = NotificationDispatcher(
+        outbox, token="", chat_id="", retry_delays=(0.0,)
+    )
+    dispatcher.replay_pending_telegram()
+    assert len(sent) == 105
+    assert len(set(sent)) == 105
+    assert outbox.list_telegram_undelivered()["count"] == 0
