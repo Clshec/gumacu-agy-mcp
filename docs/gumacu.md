@@ -117,7 +117,12 @@ Only agy_status, agy_read, agy_result_page and agy_sessions are exposed. An actu
 agy_start call through SSH was rejected; stored text retrieval succeeded.
 GUMACU_REMOTE_PROFILE=controlled additionally allows start/cancel with request-level
 workspace checks, no caller env overrides, only agy backend, no write/execute/worktree
-mode, capped timeout and forced CLI sandbox. These are application guards, not proof
+mode, capped timeout and forced CLI sandbox. Remote jobs accept an explicit timeout
+from 1 to 14400 seconds (four hours); use 7200 for a two-hour task. The request
+default remains 900 seconds. The agy CLI reserves 30 seconds of that budget for
+wrapper cleanup. This limit applies to job execution, not the short MCP request
+that returns the background job ID. Already-running jobs retain their original
+deadline; changing this limit does not extend them. These are application guards, not proof
 of operating-system filesystem isolation or prompt-injection immunity.
 Remote source after hardening: full Linux suite **790 passed**. Ruff passed.
 Requests to the tunnel poll endpoint without authorization or with a fake key returned

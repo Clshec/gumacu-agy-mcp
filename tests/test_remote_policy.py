@@ -20,11 +20,25 @@ def test_defaults_force_safe_arguments(approved):
 
 @pytest.mark.parametrize("override", [
     {"allow_write": True}, {"mode": "execute"}, {"backend": "gemini"},
-    {"extra_env": {"HOME": "/root"}}, {"worktree": True}, {"timeout": 1201},
+    {"extra_env": {"HOME": "/root"}}, {"worktree": True}, {"timeout": 14401},
 ])
 def test_remote_override_rejection(approved, override):
     with pytest.raises(ValueError):
         restrict_request({"cwd": ".", **override})
+
+
+@pytest.mark.parametrize("timeout", [3600, 7200, 14400])
+def test_remote_long_running_jobs_keep_requested_timeout(approved, timeout):
+    out = restrict_request({"cwd": ".", "mode": "long", "timeout": timeout})
+    assert out["timeout"] == timeout
+    assert out["sandbox"] is True
+    assert out["allow_write"] is False
+
+
+@pytest.mark.parametrize("timeout", [0, -1, 14401])
+def test_remote_timeout_still_has_explicit_bounds(approved, timeout):
+    with pytest.raises(ValueError, match="remote timeout must be 1..14400 seconds"):
+        restrict_request({"cwd": ".", "timeout": timeout})
 
 
 def test_outside_workspace_rejected(approved):
