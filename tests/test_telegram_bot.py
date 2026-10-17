@@ -102,3 +102,70 @@ def test_title_falls_back_to_actual_antigravity_task_and_can_refresh(tmp_path: P
     assert refreshed.antigravity_title == "Inspect server load and report clearly"
     assert refreshed.title_source == "antigravity_task"
 
+
+class FakeStore:
+    def __init__(self, records, events=None):
+        self.records = records
+        self.events = events or {}
+
+    def list_jobs(self, limit=100):
+        return list(self.records)
+
+    def update_job(self, value):
+        return value
+
+    def read_events(self, job_id):
+        return self.events.get(job_id, [])
+
+
+def make_bot(tmp_path: Path, store: FakeStore) -> TelegramBot:
+    return TelegramBot(
+        token="token",
+        chat_id="1",
+        store=store,
+        supervisor=object(),
+        safety=object(),
+        state_path=tmp_path / "state.json",
+    )
+
+
+def test_followup_job_inherits_stable_conversation_title(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("agy_mcp.telegram_bot.conversation_title", lambda session_id: None)
+    first = record("job_1", "Server load investigation")
+    followup = record("job_2")
+    followup.request = {"prompt": "What are you doing now?"}
+    store = FakeStore([followup, first])
+    bot = make_bot(tmp_path, store)
+
+    inherited = bot._inherit_conversation_title(followup)
+    refreshed = __import__("agy_mcp.telegram_bot", fromlist=["refresh_title"]).refresh_title(
+        store, inherited,
+    )
+
+    assert refreshed.antigravity_title == "Server load investigation"
+    assert refreshed.antigravity_title != "What are you doing now?"
+
+
+def test_periodic_update_is_sent_only_after_interval(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("agy_mcp.telegram_bot.conversation_title", lambda session_id: None)
+    item = record("job_3", "Server load investigation")
+    item.status = "running"
+    item.extra["telegram_origin"] = True
+    store = FakeStore(
+        [item],
+        {item.job_id: [CanonicalEvent(type="system", subtype="turn_start")]},
+    )
+    bot = make_bot(tmp_path, store)
+    bot.progress_interval = 180
+    bot._state[f"progress:{item.job_id}"] = {"sent_at": 1000, "fingerprint": "started"}
+    sent = []
+    monkeypatch.setattr(bot, "send", lambda text, buttons=None: sent.append(text) or True)
+
+    bot._send_periodic_updates_once(now=1179)
+    assert sent == []
+    bot._send_periodic_updates_once(now=1180)
+
+    assert len(sent) == 1
+    assert "ما زالت جلسة Antigravity تعمل" in sent[0]
+    assert "Server load investigation" in sent[0]
+

@@ -120,6 +120,14 @@ class TelegramBot:
         self._lock = threading.RLock()
         self._state = self._load_state()
         self._thread: threading.Thread | None = None
+        self._progress_thread: threading.Thread | None = None
+        try:
+            self.progress_interval = max(
+                30.0,
+                float(os.environ.get("AGY_MCP_TELEGRAM_PROGRESS_INTERVAL", "180")),
+            )
+        except ValueError:
+            self.progress_interval = 180.0
 
     def _load_state(self) -> dict[str, Any]:
         try:
@@ -137,6 +145,12 @@ class TelegramBot:
             return
         self._thread = threading.Thread(target=self._poll_loop, name="agy-telegram-control", daemon=True)
         self._thread.start()
+        self._progress_thread = threading.Thread(
+            target=self._progress_loop,
+            name="agy-telegram-progress",
+            daemon=True,
+        )
+        self._progress_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -157,12 +171,13 @@ class TelegramBot:
             return False
 
     def on_job_event(self, record: JobRecord, event: CanonicalEvent) -> None:
+        record = self._inherit_conversation_title(record)
         record = refresh_title(self.store, record)
         subtype = event.subtype or event.type
         if subtype not in MEANINGFUL and event.type not in {"tool_use", "error"}:
             return
         progress, _ = safe_progress(self.store.read_events(record.job_id))
-        now = time.monotonic()
+        now = time.time()
         key = f"progress:{record.job_id}"
         previous = self._state.get(key, {})
         fingerprint = f"{subtype}:{progress}"
@@ -172,14 +187,79 @@ class TelegramBot:
         self._save_state()
         self.send(self._format_record(record, progress=progress, heading="🔄 تحديث مهمة Antigravity"), buttons=self._job_buttons(record))
 
+    def _inherit_conversation_title(self, record: JobRecord) -> JobRecord:
+        """Keep one human title for every turn in the same conversation."""
+
+        if record.antigravity_title or not record.session_id:
+            return record
+        titles = self._state.get("conversation_titles", {})
+        title = titles.get(record.session_id) if isinstance(titles, dict) else None
+        if not isinstance(title, str) or not title.strip():
+            for previous in self.store.list_jobs(limit=100):
+                if previous.job_id != record.job_id and previous.session_id == record.session_id:
+                    title = previous.antigravity_title
+                    if title:
+                        break
+        if isinstance(title, str) and title.strip():
+            record.antigravity_title = title.strip()[:120]
+            record.title_source = "antigravity_task"
+            self.store.update_job(record)
+        return record
+
+    def _remember_conversation_title(self, record: JobRecord) -> None:
+        if not record.session_id or not record.antigravity_title:
+            return
+        titles = self._state.setdefault("conversation_titles", {})
+        if isinstance(titles, dict) and titles.get(record.session_id) != record.antigravity_title:
+            titles[record.session_id] = record.antigravity_title
+            self._save_state()
+
+    def _progress_loop(self) -> None:
+        while not self._stop.wait(min(30.0, self.progress_interval)):
+            try:
+                self._send_periodic_updates_once()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Telegram periodic progress failed: %s", type(exc).__name__)
+
+    def _send_periodic_updates_once(self, *, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        for record in self.store.list_jobs(limit=100):
+            if record.status != "running" or not record.extra.get("telegram_origin"):
+                continue
+            record = self._inherit_conversation_title(record)
+            record = refresh_title(self.store, record)
+            self._remember_conversation_title(record)
+            key = f"progress:{record.job_id}"
+            previous = self._state.get(key, {})
+            if current - float(previous.get("sent_at", 0)) < self.progress_interval:
+                continue
+            progress, _ = safe_progress(self.store.read_events(record.job_id))
+            self._state[key] = {
+                "fingerprint": f"periodic:{progress}",
+                "sent_at": current,
+            }
+            self._save_state()
+            self.send(
+                self._format_record(
+                    record,
+                    progress=progress,
+                    heading="⏳ ما زالت جلسة Antigravity تعمل",
+                ),
+                buttons=self._job_buttons(record),
+            )
+
     def terminal_message(self, record: JobRecord, summary: str) -> str:
+        record = self._inherit_conversation_title(record)
         record = refresh_title(self.store, record)
+        self._remember_conversation_title(record)
         progress, _ = safe_progress(self.store.read_events(record.job_id))
         heading = "✅ اكتملت مهمة Antigravity" if record.status == "completed" else "⛔ انتهت الحصة" if record.status == "quota_exhausted" else "⚠️ انتهت مهمة Antigravity"
         return self._format_record(record, progress=progress, heading=heading, summary=summary)
 
     def conversation_reply(self, record: JobRecord, reply: str) -> str:
+        record = self._inherit_conversation_title(record)
         record = refresh_title(self.store, record)
+        self._remember_conversation_title(record)
         safe = self.safety.redact(reply)[:3400]
         return (
             f"🤖 <b>{html.escape(job_title(record))}</b>\n\n"
@@ -316,7 +396,13 @@ class TelegramBot:
 
     def _records(self) -> list[JobRecord]:
         records = self.store.list_jobs(limit=100)
-        return [refresh_title(self.store, record) for record in records]
+        refreshed = []
+        for record in records:
+            record = self._inherit_conversation_title(record)
+            record = refresh_title(self.store, record)
+            self._remember_conversation_title(record)
+            refreshed.append(record)
+        return refreshed
 
     def _help(self) -> None:
         self.send("<b>أوامر Gumacu Antigravity</b>\n/jobs المهام الجارية\n/status ملخص الجارية\n/status الاسم أو الرقم\n/progress الاسم أو الرقم\n/recent أحدث النتائج\n/new نص الرسالة — جلسة جديدة\n/use الاسم أو الرقم — اختيار جلسة\nأي نص عادي — إرساله للجلسة المختارة")
@@ -381,6 +467,8 @@ class TelegramBot:
             return
         self._state["active_session_id"] = record.session_id
         self._state["active_job_id"] = record.job_id
+        self._state["active_conversation_title"] = job_title(record)
+        self._remember_conversation_title(record)
         self._save_state()
         self.send(f"تم اختيار جلسة: <b>{html.escape(job_title(record))}</b>\nأرسل رسالتك كنص عادي.")
 
@@ -409,9 +497,28 @@ class TelegramBot:
         record = self.store.get_job(response.job_id)
         if record is not None:
             record.extra["telegram_origin"] = True
+            inherited_title = self._state.get("active_conversation_title") if session_id else None
+            record.antigravity_title = (
+                str(inherited_title).strip()[:120]
+                if isinstance(inherited_title, str) and inherited_title.strip()
+                else next((" ".join(line.split()) for line in prompt.splitlines() if line.strip()), "")[:120]
+            ) or None
+            record.title_source = "antigravity_task" if record.antigravity_title else "pending"
             self.store.update_job(record)
         action = "متابعة الجلسة" if session_id else "بدء جلسة جديدة"
-        self.send(f"✅ تم {action}.\nالمعرّف: <code>{response.job_id[-12:]}</code>\nسأرسل التقدم والنتيجة هنا.")
+        self._state[f"progress:{response.job_id}"] = {
+            "fingerprint": "started",
+            "sent_at": time.time(),
+        }
+        if not session_id and record is not None and record.antigravity_title:
+            self._state["active_conversation_title"] = record.antigravity_title
+        self._save_state()
+        title_line = f"\nالمحادثة: <b>{html.escape(job_title(record))}</b>" if record is not None else ""
+        self.send(
+            f"⏳ تم {action} وجارٍ العمل عليها.{title_line}\n"
+            f"المعرّف: <code>{response.job_id[-12:]}</code>\n"
+            "سأرسل تحديثًا تلقائيًا كل بضع دقائق، ثم النتيجة النهائية."
+        )
 
 
 __all__ = ["TelegramBot", "job_title", "parse_command", "refresh_title", "resolve_job", "safe_progress"]
