@@ -186,35 +186,24 @@ Does not require MCP Events or a background chat webhook:
 2. `agy_notifications` and `agy_notification_ack` support quiet Scheduled Task polling.
 3. `agy_active_jobs` lets a user ask what Antigravity is currently doing without knowing a job id.
 4. Optional Telegram delivery is enabled with `AGY_MCP_TELEGRAM_BOT_TOKEN` and
-   `AGY_MCP_TELEGRAM_CHAT_ID`; quota exhaustion is sent explicitly.
+   `AGY_MCP_TELEGRAM_CHAT_ID`; quota exhaustion is sent explicitly. The bot
+   reads Antigravity's authoritative `Title` for each conversation and offers
+   `/jobs`, `/status`, `/progress`, `/recent`, `/new`, and `/use`. Plain text
+   continues the selected Antigravity conversation. Inline buttons refresh the
+   status, show the latest safe assistant reply, or select a conversation.
 5. Telegram does not inject a message into an ordinary ChatGPT conversation. It is the
    immediate notification channel; a Scheduled Task can bring the stored result back to a
    chat when that task has access to the plugin.
 
-The existing terminal watcher remains available:
-1. **Interactive CLI Watcher (`agy-watch`)**:
-   - Entry point: `agy-watch --latest` or `agy-watch --job <id>` (installed as console script via `pyproject.toml`).
-   - `--wait-new`: Waits until a newly created job starts, ideal when starting monitoring before prompting ChatGPT.
-   - Streams live thoughts, tool calls, and outputs formatted with ANSI colors.
-   - On completion, outputs a summary banner with runtime, session ID, result preview, and the exact Arabic prompt to copy-paste into ChatGPT.
-2. **Windows SSH Helper Runner**:
-   - Script: `scripts/gumacu_watch_ssh.py`.
-   - Allows operators on Windows to monitor remote Netcup jobs in real-time over SSH without logging in manually:
-     `python scripts/gumacu_watch_ssh.py --latest`
-     `python scripts/gumacu_watch_ssh.py --latest --wait-new`
-     `python scripts/gumacu_watch_ssh.py --job <job_id>`
-3. **Manual Continuation Workflow**:
-   - User instructs ordinary ChatGPT: `اطلب من Antigravity فحص سبب ارتفاع Load Average`.
-   - ChatGPT calls `agy_start(...)` and returns `status="running"` and `job_id`.
-   - User watches real-time progress via `python scripts/gumacu_watch_ssh.py --latest`.
-   - Once completed, user pastes the generated message into ChatGPT:
-     `Antigravity انتهى من المهمة بنجاح. استرجع النتيجة الكاملة عبر أداة: agy_result_page(job_id="...", offset=0, limit=16000) ثم تابع الأوامر التالية في نفس الجلسة (SESSION_ID='...').`
-   - ChatGPT retrieves the full, unsummarized result using `agy_result_page` and continues next steps seamlessly with `SESSION_ID`.
+`agy-watch` and its Windows SSH helper have been removed. Telegram is now the
+supported terminal-free monitor and conversation interface. Only the configured
+private chat ID is accepted; Telegram starts are read-only (`allow_write=false`)
+inside the configured approved workspace.
 
 ### Verification Suite
-- Unit & Protocol tests: `tests/test_events.py` and `tests/test_watch.py` (8/8 passed).
+- Unit and protocol coverage includes MCP Events, durable notifications, and
+  the Telegram command/conversation surface.
 - Full regression suite on Netcup Linux: **577 passed** (0 failures).
-- Real SSH watcher verification: `python scripts/gumacu_watch_ssh.py --latest` successfully connected, streamed previous turn events, and generated exact ChatGPT prompt banner.
 
 ## Mode 3: Codex & ChatGPT Work Operator Execution (`operator` Profile)
 

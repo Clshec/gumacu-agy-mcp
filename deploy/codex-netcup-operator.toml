@@ -7,7 +7,7 @@ args = [
   "-i", 'C:\Users\TechnoHouse\.ssh\hhh.pem',
   "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
   "root@159.195.65.10",
-  "env GUMACU_REMOTE_PROFILE=operator GUMACU_ALLOWED_WORKSPACES=/root/gumacu-infrastructure AGY_MCP_SESSION_ROOT=/var/lib/gumacu-agy-mcp/sessions /opt/gumacu-agy-mcp/venv/bin/python -m agy_mcp.cli",
+  "/opt/gumacu-agy-mcp/run-mcp.sh",
 ]
 startup_timeout_sec = 30
 tool_timeout_sec = 180

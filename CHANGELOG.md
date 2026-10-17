@@ -8,6 +8,12 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Turn the private Telegram bot into a durable Antigravity control surface:
+  authoritative Antigravity conversation titles, live status/progress, inline
+  status/latest-reply/session buttons, `/jobs`, `/status`, `/progress`,
+  `/recent`, `/new`, `/use`, and safe follow-up messages to the selected
+  conversation.
+
 - Add a durable terminal-notification outbox with idempotent acknowledgement,
   active-job progress discovery, and restart-safe delivery state for local and
   scheduled ChatGPT workflows.
@@ -27,6 +33,9 @@ uses [SemVer](https://semver.org/spec/v2.0.0.html).
   and recent activity so clients can explain a running job meaningfully.
 
 ### Fixed
+
+- Remove the obsolete `agy-watch` console and SSH watcher now that Telegram
+  provides persistent monitoring without an open terminal.
 
 - Prevent unmonitorable long calls by explicitly requiring clients to use
   `agy_start` for tasks where the user may wait, request progress, or expect a

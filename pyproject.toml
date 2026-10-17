@@ -1,6 +1,6 @@
 [project]
 name = "agy-mcp"
-version = "0.1.16"
+version = "0.1.17"
 description = "Skill-first, MCP-second bridge from Claude Code / OpenAI Codex to Google Antigravity CLI (agy)."
 readme = "README.md"
 license = { text = "MIT" }
@@ -56,7 +56,6 @@ agymcp = "agy_mcp.cli:main"
 agy-bridge = "agy_mcp.bridge:main"
 agy-doctor = "agy_mcp.doctor:main"
 agy-install-skill = "agy_mcp.install:main"
-agy-watch = "agy_mcp.watch:main"
 
 [project.urls]
 Homepage = "https://github.com/Boulea7/agy-mcp"

@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from agy_mcp.models import JobRecord
+from agy_mcp.telegram_bot import TelegramBot, refresh_title
 from agy_mcp.utils import ensure_directory, safe_write_text, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ class NotificationOutbox:
                 "id": note_id,
                 "job_id": record.job_id,
                 "session_id": record.session_id,
+                "antigravity_title": record.antigravity_title,
                 "status": record.status,
                 "reason_code": reason_code or record.status,
                 "summary": summary[:1000],
@@ -173,6 +175,7 @@ class NotificationDispatcher:
         self._chat_id = chat_id if chat_id is not None else os.environ.get(TELEGRAM_CHAT_ID_ENV, "")
         self.timeout_seconds = timeout_seconds
         self.retry_delays = retry_delays
+        self.bot: TelegramBot | None = None
         if self.telegram_configured:
             self.replay_pending_telegram()
 
@@ -186,6 +189,26 @@ class NotificationDispatcher:
             "notification_outbox": str(self.outbox.path.name),
         }
 
+    def bind_runtime(self, *, store: Any, supervisor: Any, safety: Any) -> None:
+        """Attach the live supervisor and start the private Telegram command loop."""
+
+        if not self.telegram_configured or self.bot is not None:
+            return
+        state_path = self.outbox.path.with_name("telegram_state.json")
+        self.bot = TelegramBot(
+            token=self._token,
+            chat_id=self._chat_id,
+            store=store,
+            supervisor=supervisor,
+            safety=safety,
+            state_path=state_path,
+        )
+        self.bot.start()
+
+    def on_job_event(self, record: JobRecord, event: Any) -> None:
+        if self.bot is not None:
+            self.bot.on_job_event(record, event)
+
     def notify_job(
         self,
         record: JobRecord,
@@ -195,6 +218,8 @@ class NotificationDispatcher:
     ) -> dict[str, Any] | None:
         if record.status not in TERMINAL_STATUSES:
             return None
+        if self.bot is not None:
+            record = refresh_title(self.bot.store, record)
         item = self.outbox.record(record, summary=summary, reason_code=reason_code)
         if item.get("telegram", {}).get("delivered"):
             return item
@@ -237,12 +262,25 @@ class NotificationDispatcher:
         icon = "✅" if status == "completed" else "⛔" if status == "quota_exhausted" else "⚠️"
         return (
             f"{icon} <b>Antigravity: {html.escape(status)}</b>\n"
+            f"Name: <b>{html.escape(str(item.get('antigravity_title') or 'pending'))}</b>\n"
             f"Job: <code>{html.escape(str(item['job_id']))}</code>\n"
             f"Reason: <code>{html.escape(str(item['reason_code']))}</code>\n"
             f"{html.escape(str(item['summary']))}"
         )
 
     def _deliver_telegram(self, item: dict[str, Any]) -> None:
+        if self.bot is not None:
+            record = self.bot.store.get_job(str(item["job_id"]))
+            if record is not None:
+                delivered = self.bot.send(
+                    self.bot.terminal_message(record, str(item.get("summary") or "")),
+                    buttons=self.bot._job_buttons(record),
+                )
+                self.outbox.update_telegram(
+                    item["id"], configured=True, delivered=delivered, attempts=1,
+                    error=None if delivered else "TelegramSendFailed",
+                )
+                return
         url = f"https://api.telegram.org/bot{self._token}/sendMessage"
         error: str | None = None
         attempts = 0

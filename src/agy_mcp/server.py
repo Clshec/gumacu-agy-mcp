@@ -185,6 +185,11 @@ def _ensure_state() -> tuple[Config, SafetyPolicy, SessionStore, Supervisor]:
                 events_dispatcher=_webhook_dispatcher,
                 notification_dispatcher=_notification_dispatcher,
             )
+            _notification_dispatcher.bind_runtime(
+                store=_store,
+                supervisor=_supervisor,
+                safety=_safety,
+            )
         if _orchestrator is None:
             _orchestrator = Orchestrator(store=_store, supervisor=_supervisor)
             _supervisor.orchestrator = _orchestrator

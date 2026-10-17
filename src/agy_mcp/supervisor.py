@@ -93,9 +93,10 @@ class StoreEventSink(EventSink):
     secret that survived the adapter's redaction pass.
     """
 
-    def __init__(self, store: SessionStore, job_id: str) -> None:
+    def __init__(self, store: SessionStore, job_id: str, notifier: Any | None = None) -> None:
         self.store = store
         self.job_id = job_id
+        self.notifier = notifier
         self._lock = threading.Lock()
         self._last_event_ts: str | None = None
 
@@ -114,6 +115,19 @@ class StoreEventSink(EventSink):
                 # is tracked as a Phase 4+ followup.
                 return
             self._last_event_ts = event.ts
+            record = self.store.get_job(self.job_id)
+            if record is not None:
+                changed = False
+                if event.session_id and not record.session_id:
+                    record.session_id = event.session_id
+                    changed = True
+                if changed:
+                    self.store.update_job(record)
+                if self.notifier is not None:
+                    try:
+                        self.notifier.on_job_event(record, event)
+                    except Exception:
+                        pass
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +646,7 @@ class Supervisor:
         cancel_event: threading.Event,
     ) -> None:
         paths = JobPaths.for_job(self.store.root, job_id)
-        sink = StoreEventSink(self.store, job_id)
+        sink = StoreEventSink(self.store, job_id, self._notification_dispatcher)
         if request.allow_write or request.mode == "execute":
             sink.emit(
                 CanonicalEvent(
