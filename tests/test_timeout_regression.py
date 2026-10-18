@@ -1,11 +1,10 @@
-import pytest
-from unittest.mock import MagicMock
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import pytest
+
+from agy_mcp import device_agent, device_tools, server
 from agy_mcp.models import BridgeRequest
-from agy_mcp import device_tools
-from agy_mcp import device_agent
-from agy_mcp import server
 
 
 def test_bridge_request_timeout_defaults_and_gates():
