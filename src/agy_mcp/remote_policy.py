@@ -10,7 +10,7 @@ from typing import Any
 READ_TOOLS = frozenset({
     "agy_status", "agy_read", "agy_result_page", "agy_sessions",
     "agy_pipeline_status", "agy_notifications", "agy_notification_ack",
-    "agy_active_jobs",
+    "agy_active_jobs", "agy_capabilities",
 })
 DEVICE_TOOLS = frozenset({
     "agy_devices", "agy_device_call", "agy_device_start",
@@ -18,7 +18,7 @@ DEVICE_TOOLS = frozenset({
     "agy_device_result", "agy_device_cancel", "agy_device_sessions",
     "agy_device_doctor",
 })
-CONTROLLED_TOOLS = READ_TOOLS | {"agy_start", "agy_cancel", "agy_pipeline_start", "agy_pipeline_cancel"} | DEVICE_TOOLS
+CONTROLLED_TOOLS = READ_TOOLS | {"agy_start", "agy_cancel", "agy_pipeline_start", "agy_pipeline_cancel", "agy_dispatch"} | DEVICE_TOOLS
 OPERATOR_TOOLS = CONTROLLED_TOOLS | {"agy", "agy_continue", "agy_result", "agy_doctor"}
 VALID_PROFILES = frozenset({"local", "read-only", "controlled", "controlled-write", "operator"})
 
