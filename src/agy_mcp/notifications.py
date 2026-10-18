@@ -334,8 +334,8 @@ class NotificationDispatcher:
             else "⚠️"
         )
         lines = [f"{icon} <b>Antigravity: {html.escape(status)}</b>"]
-        if item.get("device_id"):
-            lines.append(f"Device: <b>{html.escape(str(item['device_id']))}</b>")
+        device_id = str(item.get("device_id") or "linux-netcup")
+        lines.append(f"Device: <b>{html.escape(device_id)}</b>")
         title = item.get("antigravity_title")
         source = item.get("title_source")
         task_label = item.get("task_label")
