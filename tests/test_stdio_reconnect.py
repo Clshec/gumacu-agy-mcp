@@ -1,6 +1,7 @@
 """A cached client must work against a new tunnel child without manual refresh."""
 import json
 import os
+import selectors
 import subprocess
 import sys
 
@@ -23,9 +24,26 @@ def test_fresh_child_handles_normal_and_resumed_client(normal, tmp_path):
             "clientInfo": {"name": "regression", "version": "1"},
         }})
     requests.append({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-    output, errors = child.communicate("".join(json.dumps(r) + "\n" for r in requests), timeout=30)
+    responses = []
+    try:
+        for request in requests:
+            child.stdin.write(json.dumps(request) + "\n")
+            child.stdin.flush()
+            with selectors.DefaultSelector() as selector:
+                selector.register(child.stdout, selectors.EVENT_READ)
+                assert selector.select(30), "MCP response timed out"
+            responses.append(json.loads(child.stdout.readline()))
+            if request["method"] == "initialize":
+                child.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+                child.stdin.flush()
+        # Keep the transport open until each response arrives, as a real client does.
+        output, errors = child.communicate(timeout=10)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
     assert child.returncode == 0, errors
-    responses = [json.loads(line) for line in output.splitlines()]
+    assert not output  # bootstrap response never leaks upstream
     assert len(responses) == len(requests)  # bootstrap response never leaks upstream
     assert [r["id"] for r in responses] == [r["id"] for r in requests]
     assert "agy_doctor" in [t["name"] for t in responses[-1]["result"]["tools"]]
