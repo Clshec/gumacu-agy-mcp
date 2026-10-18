@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from agy_mcp import capability_gateway as gw
-from agy_mcp.device_gateway import Broker, load_devices
+from agy_mcp.device_gateway import Broker
 
 
 class FakeMcp:
