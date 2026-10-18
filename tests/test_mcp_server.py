@@ -242,6 +242,8 @@ def test_tools_registered():
         "agy_device_cancel",
         "agy_device_sessions",
         "agy_device_doctor",
+        "agy_capabilities",
+        "agy_dispatch",
     }
     assert expected == set(server.mcp._tool_manager._tools.keys())
 
