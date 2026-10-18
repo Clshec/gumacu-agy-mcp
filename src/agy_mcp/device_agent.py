@@ -76,7 +76,7 @@ def dispatch(action: str, payload: dict[str, Any], call_id: str) -> dict[str, An
             raise ValueError("invalid start parameters")
         args = {key: val for key, val in payload.items() if key in allowed}
         if "timeout" not in args or args["timeout"] is None:
-            args["timeout"] = 14400
+            args["timeout"] = 0
         # Stable 128-bit remote identifier (6 + 32 = 38 chars). Longer
         # identifiers are masked as secret-like by SafetyPolicy.redact().
         # Derive it from the broker call ID so replay is idempotent.

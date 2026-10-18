@@ -17,7 +17,6 @@ Strategy (see docs/output-strategy.md for the full rationale):
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
 import os
 import re
@@ -26,6 +25,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from agy_mcp.adapters.base import (
@@ -312,8 +312,8 @@ class AgyPrintBackend(BaseAdapter):
             f"--print={self._prepare_prompt(request.prompt)}",
         ]
 
-        if cap.supports_print_timeout:
-            # Reserve wrapper-side grace for klog drain + child cleanup.
+        if cap.supports_print_timeout and request.timeout > 0:
+            # Explicit positive limit only. Omitting the flag uses unlimited print mode.
             inner_timeout = max(30, request.timeout - 30)
             argv += ["--print-timeout", f"{inner_timeout}s"]
         if cap.supports_log_file and log_path is not None:
@@ -482,7 +482,7 @@ class AgyPrintBackend(BaseAdapter):
         for t in threads:
             t.start()
 
-        deadline = start + max(request.timeout, 1)
+        deadline = start + request.timeout if request.timeout > 0 else None
         exit_code: int | None = None
         timed_out = False
         cancelled = False
@@ -507,7 +507,7 @@ class AgyPrintBackend(BaseAdapter):
                     # Double-cancel UX is tracked in followups.md.
                     exit_code = _shutdown_cascade(proc, escalation_cancel_event=None)
                     break
-                if time.time() >= deadline:
+                if deadline is not None and time.time() >= deadline:
                     timed_out = True
                     self._emit(
                         ctx,

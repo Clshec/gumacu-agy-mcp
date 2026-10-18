@@ -10,14 +10,13 @@ Verifies:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import httpx
 import pytest
 
 from agy_mcp.device_gateway import Broker, token_hash
-from agy_mcp.notifications import NotificationDispatcher, NotificationOutbox, TERMINAL_STATUSES
+from agy_mcp.notifications import NotificationDispatcher, NotificationOutbox
 
 
 @pytest.fixture

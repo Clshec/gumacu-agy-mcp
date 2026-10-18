@@ -10,6 +10,7 @@ import datetime
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -23,11 +24,13 @@ from urllib.parse import urlsplit
 
 from agy_mcp.models import JobRecord
 from agy_mcp.notifications import (
+    TERMINAL_STATUSES,
     NotificationDispatcher,
     NotificationOutbox,
-    TERMINAL_STATUSES,
 )
 from agy_mcp.safety import SafetyPolicy
+
+logger = logging.getLogger(__name__)
 
 DEVICE_ID = re.compile(r"^[a-z][a-z0-9-]{1,47}$")
 CALL_ID = re.compile(r"^call_[0-9a-f]{32}$")

@@ -107,8 +107,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default="default",
         help="Override the config worktree default.",
     )
-    p.add_argument("--timeout", type=int, default=900,
-                   help="Wrapper-level timeout in seconds (default 900).")
+    p.add_argument("--timeout", type=int, default=0,
+                   help="Optional wrapper time limit in seconds (0 = unlimited; default 0).")
     p.add_argument("--max-output-chars", type=int, default=60_000)
     p.add_argument("--backend", choices=["auto", "agy", "gemini"], default=None,
                    help="Override the config backend.")

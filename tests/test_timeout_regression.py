@@ -1,29 +1,28 @@
-import pytest
-from unittest.mock import MagicMock
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import pytest
+
+from agy_mcp import device_agent, device_tools, server
 from agy_mcp.models import BridgeRequest
-from agy_mcp import device_tools
-from agy_mcp import device_agent
-from agy_mcp import server
 
 
 def test_bridge_request_timeout_defaults_and_gates():
-    # Detached or long task defaults to 14400s
-    assert BridgeRequest(prompt="test", mode="long").timeout == 14400
-    assert BridgeRequest(prompt="test", detach=True).timeout == 14400
-    # Short tasks stay at 900s
-    assert BridgeRequest(prompt="test", mode="ask").timeout == 900
+    # No jobs have a wall-clock limit unless the caller chooses one.
+    assert BridgeRequest(prompt="test", mode="long").timeout == 0
+    assert BridgeRequest(prompt="test", detach=True).timeout == 0
+    assert BridgeRequest(prompt="test", mode="ask").timeout == 0
     # Explicit custom timeout accepted up to 86400
     assert BridgeRequest(prompt="test", timeout=21600).timeout == 21600
     assert BridgeRequest(prompt="test", timeout=86400).timeout == 86400
     assert BridgeRequest(prompt="test", timeout=60, detach=True).timeout == 60
 
-    # Over 86400 or non-positive rejected
+    # Explicit finite limits are supported; unlimited is zero.
     with pytest.raises(ValueError, match="timeout exceeds 86400 seconds"):
         BridgeRequest(prompt="test", timeout=86401)
-    with pytest.raises(ValueError, match="timeout must be positive seconds"):
-        BridgeRequest(prompt="test", timeout=0)
+    assert BridgeRequest(prompt="test", timeout=0).timeout == 0
+    with pytest.raises(ValueError, match="timeout must be nonnegative seconds"):
+        BridgeRequest(prompt="test", timeout=-1)
 
 
 def test_device_tools_timeout_gates(monkeypatch):
@@ -56,20 +55,20 @@ def test_device_tools_timeout_gates(monkeypatch):
     assert res["success"] is True
     assert captured_payload["timeout"] == 21600
 
-    # Default timeout is 14400
+    # Default timeout is unlimited
     res = start_fn(device_id="windows-main", PROMPT="test prompt")
     assert res["success"] is True
-    assert captured_payload["timeout"] == 14400
+    assert captured_payload["timeout"] == 0
 
     # 86401 rejected
     res = start_fn(device_id="windows-main", PROMPT="test prompt", timeout=86401)
     assert res["success"] is False
     assert res["error"] == "invalid mode or timeout"
 
-    # continue tool default timeout is 14400
+    # Continue defaults to unlimited
     res = cont_fn(device_id="windows-main", SESSION_ID="sess_123", PROMPT="continue prompt")
     assert res["success"] is True
-    assert captured_payload["timeout"] == 14400
+    assert captured_payload["timeout"] == 0
 
 
 def test_device_agent_start_timeout(monkeypatch):
@@ -89,10 +88,10 @@ def test_device_agent_start_timeout(monkeypatch):
     assert res["success"] is True
     assert captured_args["timeout"] == 21600
 
-    # Dispatch without timeout defaults to 14400
+    # Dispatch without timeout defaults to unlimited
     res = device_agent.dispatch("start", {"PROMPT": "run"}, "call_1234567890abcdef1234567890abcdef")
     assert res["success"] is True
-    assert captured_args["timeout"] == 14400
+    assert captured_args["timeout"] == 0
 
 
 def test_agy_start_tool_accepts_21600(monkeypatch, tmp_path: Path):
@@ -120,3 +119,47 @@ def test_agy_start_tool_accepts_21600(monkeypatch, tmp_path: Path):
     call_req = mock_supervisor.start.call_args[0][0]
     assert isinstance(call_req, BridgeRequest)
     assert call_req.timeout == 21600
+
+def test_agy_print_command_without_implicit_timeout(monkeypatch):
+    from agy_mcp.adapters.agy import AgyPrintBackend
+    from agy_mcp.models import Capability
+
+    adapter = AgyPrintBackend()
+    cap = Capability(
+        bin_path="/usr/local/bin/agy",
+        backend="agy",
+        supports_print=True,
+        supports_print_timeout=True,
+    )
+    monkeypatch.setattr(adapter, "detect", lambda: cap)
+    unlimited = adapter.build_command(BridgeRequest(prompt="go"), log_path=None)
+    assert "--print-timeout" not in unlimited
+
+    finite = adapter.build_command(BridgeRequest(prompt="go", timeout=120), log_path=None)
+    idx = finite.index("--print-timeout")
+    assert finite[idx + 1] == "90s"
+
+
+def test_device_tools_accept_explicit_unlimited(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        device_tools,
+        "submit",
+        lambda device, action, payload: calls.append((device, action, payload)) or {"success": True},
+    )
+    available = {}
+
+    class DummyMcp:
+        def tool(self, *, name):
+            def decorator(fn):
+                available[name] = fn
+                return fn
+            return decorator
+
+    device_tools.register_device_tools(DummyMcp())
+    start = available["agy_device_start"]
+    cont = available["agy_device_continue"]
+    assert start(device_id="windows-main", PROMPT="test", timeout=0)["success"]
+    assert calls[-1][2]["timeout"] == 0
+    assert cont(device_id="windows-main", SESSION_ID="sess_123", PROMPT="continue", timeout=0)["success"]
+    assert calls[-1][2]["timeout"] == 0

@@ -1,7 +1,6 @@
 """Unit tests for deploy/refresh-private-tunnel.ps1."""
 
 from pathlib import Path
-import re
 
 
 def test_refresh_private_tunnel_script_exists_and_structure():
@@ -38,7 +37,6 @@ def test_refresh_private_tunnel_matches_starter_contract():
 
     assert starter_path.is_file()
     refresh_code = refresh_path.read_text(encoding="utf-8")
-    starter_code = starter_path.read_text(encoding="utf-8")
 
     # Default tunnel ID should match
     assert "tunnel_6ace3926c4e48191aeced4035a6997e5" in refresh_code
