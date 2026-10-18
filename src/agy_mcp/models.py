@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Enums (string literals — kept as Literal for trivial JSON round-trips)
@@ -231,6 +231,13 @@ class BridgeRequest(BaseModel):
                 f"({value} given); use mode='long' for jobs that exceed 24h",
             )
         return value
+
+    @model_validator(mode="after")
+    def _enforce_long_task_timeout(self) -> BridgeRequest:
+        # Enforce >=14400s default for DETACHED/LONG tasks; short tasks stay at 900s
+        if (self.mode == "long" or self.detach) and self.timeout == 900:
+            self.timeout = 14400
+        return self
 
     @field_validator("session_id")
     @classmethod

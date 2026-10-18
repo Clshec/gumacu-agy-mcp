@@ -728,7 +728,7 @@ def agy_start_tool(
     model: str | None = None,
     sandbox: bool = False,
     mode: Mode = "ask",
-    timeout: int = 900,
+    timeout: int = 14400,
     allow_write: bool = False,
     worktree: bool | None = None,
     backend: BackendName = "auto",

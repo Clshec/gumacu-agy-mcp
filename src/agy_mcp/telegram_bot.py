@@ -764,6 +764,7 @@ class TelegramBot:
             "cwd": ".",
             "mode": "long",
             "allow_write": False,
+            "timeout": 14400,
         }
         if session_id:
             payload["SESSION_ID"] = session_id
@@ -801,7 +802,7 @@ class TelegramBot:
             allowed = os.environ.get("GUMACU_ALLOWED_WORKSPACES", "")
             cwd = allowed.split(os.pathsep)[0] if allowed else "."
         try:
-            request = BridgeRequest(prompt=prompt, cwd=cwd, session_id=session_id, mode="long", timeout=1200, detach=True, allow_write=False, worktree=False, backend="agy", output_protocol="codex")
+            request = BridgeRequest(prompt=prompt, cwd=cwd, session_id=session_id, mode="long", timeout=14400, detach=True, allow_write=False, worktree=False, backend="agy", output_protocol="codex")
             response = self.supervisor.start(request)
         except Exception as exc:  # noqa: BLE001
             self.send(f"تعذر بدء الرسالة: {html.escape(self.safety.redact(str(exc))[:300])}")
