@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 
 from agy_mcp.device_gateway import CALL_ID, DEVICE_ID, MAX_BODY
 
-ACTIONS = frozenset({"start", "status", "read", "result", "cancel", "sessions", "doctor"})
+ACTIONS = frozenset({"start", "status", "read", "result", "cancel", "sessions", "doctor", "shutdown"})
 
 
 def post(url: str, token: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -67,6 +67,11 @@ def dispatch(action: str, payload: dict[str, Any], call_id: str) -> dict[str, An
         raise ValueError("unsupported action or command identity")
     if not isinstance(payload, dict):
         raise ValueError("invalid payload")
+    if action == "shutdown":
+        if set(payload) - {"confirm", "dry_run"} or any(type(v) is not bool for v in payload.values()):
+            raise ValueError("invalid shutdown parameters")
+        from agy_mcp.runtime_control import shutdown_antigravity
+        return shutdown_antigravity(**payload)
     from agy_mcp import server
 
     if action == "start":
@@ -187,7 +192,7 @@ def run(device: str, token: str, gateway: str, cache_path: Path) -> None:
                       "claim": work["claim"], "result": result})
                 cache.mark_sent(work["id"])
             delay = 1.0
-            time.sleep(1 if work else 2)
+            time.sleep(0.1 if work else 0.5)
         except (HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError, TypeError):
             time.sleep(delay)
             delay = min(delay * 2, 30)

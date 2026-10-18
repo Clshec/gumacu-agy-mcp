@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 DEVICE_ID = re.compile(r"^[a-z][a-z0-9-]{1,47}$")
 CALL_ID = re.compile(r"^call_[0-9a-f]{32}$")
-ACTIONS = frozenset({"start", "status", "read", "result", "cancel", "sessions", "doctor"})
+ACTIONS = frozenset({"start", "status", "read", "result", "cancel", "sessions", "doctor", "shutdown"})
 MAX_BODY = 1024 * 1024
 
 
@@ -71,7 +71,8 @@ def load_devices(path: Path) -> dict[str, dict[str, Any]]:
             raise ValueError("invalid device identity or token hash")
         if name in result:
             raise ValueError("duplicate device ID")
-        actions = item.get("allowed_actions", sorted(ACTIONS))
+        # Destructive lifecycle control always needs explicit device opt-in.
+        actions = item.get("allowed_actions", sorted(ACTIONS - {"shutdown"}))
         if not set(actions) <= ACTIONS:
             raise ValueError("unknown permitted action")
         result[name] = {"token_sha256": digest, "os": item.get("os", "unknown"),
