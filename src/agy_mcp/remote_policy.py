@@ -23,6 +23,7 @@ OPERATOR_TOOLS = CONTROLLED_TOOLS | {"agy", "agy_continue", "agy_result", "agy_d
 VALID_PROFILES = frozenset({"local", "read-only", "controlled", "controlled-write", "operator"})
 
 
+
 def remote_profile() -> str:
     profile = os.environ.get("GUMACU_REMOTE_PROFILE", "local")
     if profile not in VALID_PROFILES:
