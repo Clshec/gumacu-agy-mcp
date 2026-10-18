@@ -189,7 +189,7 @@ class BridgeRequest(BaseModel):
     sandbox: bool = False
     mode: Mode = "ask"
     return_all_messages: bool = False
-    timeout: int = 900
+    timeout: int = 0  # 0 means no time limit; positive values are explicit caps
     detach: bool = False
     allow_write: bool = False
     # ``None`` means "use the value from config (env / config.toml)".
@@ -220,8 +220,8 @@ class BridgeRequest(BaseModel):
     @field_validator("timeout")
     @classmethod
     def _timeout_positive(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("timeout must be positive seconds")
+        if value < 0:
+            raise ValueError("timeout must be nonnegative seconds (0 means unlimited)")
         # Phase 8 R1 arch P2-1: cap at 24h. Beyond that the long-job
         # supervisor should be used (``mode="long"`` + ``agy_start``)
         # rather than a single synchronous call.
@@ -232,12 +232,6 @@ class BridgeRequest(BaseModel):
             )
         return value
 
-    @model_validator(mode="after")
-    def _enforce_long_task_timeout(self) -> BridgeRequest:
-        # Enforce >=14400s default for DETACHED/LONG tasks; short tasks stay at 900s
-        if (self.mode == "long" or self.detach) and self.timeout == 900:
-            self.timeout = 14400
-        return self
 
     @field_validator("session_id")
     @classmethod
