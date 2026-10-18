@@ -265,7 +265,20 @@ def test_gateway_running_jobs_watcher(test_env, monkeypatch: pytest.MonkeyPatch)
         },
     })
 
-    # Job is removed from running_jobs and notification enqueued
+    # Metadata completion must not consume the one terminal notification.
+    assert outbox.list_pending()["count"] == 1
+    broker.check_running_jobs()
+    result_work = broker.poll("windows-main")
+    assert result_work["action"] == "result"
+    broker.check_running_jobs()
+    assert broker.poll("windows-main") is None  # no duplicate while leased
+    broker.finish("windows-main", result_work["id"], result_work["claim"], {
+        "success": True,
+        "record": {"job_id": job_id, "status": "completed"},
+        "result_text": "أهلاً وسهلاً! كيف يمكنني مساعدتك اليوم؟",
+    })
+
+    # Tracking ends only after the real answer is durably enqueued.
     with broker.lock:
         assert broker.conn.execute("SELECT * FROM running_jobs WHERE job_id=?", (job_id,)).fetchone() is None
 
@@ -273,6 +286,7 @@ def test_gateway_running_jobs_watcher(test_env, monkeypatch: pytest.MonkeyPatch)
     notes = outbox.list_pending()["notifications"]
     assert {n["status"] for n in notes} == {"started", "completed"}
     assert all(n["job_id"] == job_id for n in notes)
+    assert next(n for n in notes if n["status"] == "completed")["summary"].startswith("أهلاً")
 
 
 def test_remote_lifecycle_title_persistence_and_no_duplicates(test_env, monkeypatch: pytest.MonkeyPatch):

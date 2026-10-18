@@ -403,6 +403,25 @@ class Broker:
         else:
             job_id = "job_r_" + ident[5:]
 
+        # Status responses contain metadata only. Keep durable tracking until
+        # the agent returns the actual result, including across gateway restarts.
+        if status == "completed" and "result_text" not in result:
+            with self.lock, self.conn:
+                lifecycle = self.conn.execute(
+                    "SELECT notified_terminal FROM remote_lifecycle WHERE job_id=?", (job_id,)
+                ).fetchone()
+                if lifecycle and lifecycle["notified_terminal"]:
+                    return None
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO running_jobs(job_id,device,request_id,created,updated) VALUES(?,?,?,?,?)",
+                    (job_id, device, ident, time.time(), time.time()),
+                )
+                self.conn.execute(
+                    "UPDATE remote_lifecycle SET status='completed', updated_at=? WHERE job_id=?",
+                    (time.time(), job_id),
+                )
+            return None
+
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM running_jobs WHERE job_id=?", (job_id,))
             lc = self.conn.execute("SELECT notified_terminal FROM remote_lifecycle WHERE job_id=?", (job_id,)).fetchone()
@@ -511,12 +530,17 @@ class Broker:
                 if not p or (now - p["seen"]) > 35:
                     continue
                 existing = self.conn.execute(
-                    "SELECT id FROM calls WHERE device=? AND action='status' AND payload LIKE ? AND state IN ('queued', 'leased')",
+                    "SELECT id FROM calls WHERE device=? AND action IN ('status','result') AND payload LIKE ? AND state IN ('queued', 'leased')",
                     (device, f'%"{job_id}"%'),
                 ).fetchone()
             if existing is None:
                 try:
-                    self.submit(device, "status", {"job_id": job_id})
+                    with self.lock:
+                        lifecycle = self.conn.execute(
+                            "SELECT status FROM remote_lifecycle WHERE job_id=?", (job_id,)
+                        ).fetchone()
+                    action = "result" if lifecycle and lifecycle["status"] == "completed" else "status"
+                    self.submit(device, action, {"job_id": job_id})
                 except Exception:
                     pass
 
