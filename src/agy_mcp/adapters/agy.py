@@ -30,13 +30,13 @@ from pathlib import Path
 
 from agy_mcp.adapters.base import (
     _MAX_LINE_BYTES,
-    _RunContext,
-    _drain_stream,
-    _process_group_kwargs,
-    _shutdown_cascade,
     AdapterRunResult,
     BaseAdapter,
     EventSink,
+    _drain_stream,
+    _process_group_kwargs,
+    _RunContext,
+    _shutdown_cascade,
     has_flag,
     resolve_cwd,
 )

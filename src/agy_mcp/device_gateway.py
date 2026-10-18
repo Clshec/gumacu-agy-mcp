@@ -24,9 +24,9 @@ from urllib.parse import urlsplit
 
 from agy_mcp.models import JobRecord
 from agy_mcp.notifications import (
+    TERMINAL_STATUSES,
     NotificationDispatcher,
     NotificationOutbox,
-    TERMINAL_STATUSES,
 )
 from agy_mcp.safety import SafetyPolicy
 
