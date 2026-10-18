@@ -10,6 +10,7 @@ import re
 import secrets
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -161,6 +162,8 @@ class TelegramBot:
         self._progress_thread: threading.Thread | None = None
         self._shutdown_confirmations: dict[str, tuple[str, float]] = {}
         self._http: Any = httpx  # Unstarted instances remain simple to test.
+        self._receipt_since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._receipt_thread: threading.Thread | None = None
         try:
             self.progress_interval = max(
                 30.0,
@@ -305,6 +308,38 @@ class TelegramBot:
             daemon=True,
         )
         self._progress_thread.start()
+        self._receipt_thread = threading.Thread(target=self._receipt_loop, name="agy-telegram-receipts", daemon=True)
+        self._receipt_thread.start()
+
+    def _receipt_loop(self) -> None:
+        # Observe the durable job stores, never start another getUpdates poller.
+        while not self._stop.wait(1):
+            try:
+                self._send_receipts_once()
+            except Exception as exc:
+                logger.warning("Telegram receipt observation failed: %s", type(exc).__name__)
+
+    def _send_receipts_once(self) -> None:
+        records = self._records()
+        for record in records:
+            if not record.started_at or record.started_at < self._receipt_since:
+                continue
+            key = f"receipt:{record.job_id}"
+            if self._state.get(key) or self.is_telegram_job(record):
+                continue
+            if record.job_id in self._state.get("telegram_remote_jobs", {}):
+                continue
+            device_id = self._record_device(record)
+            if self.send(
+                f"📥 تم استلام المهمة على <code>{html.escape(device_id)}</code>\n"
+                f"المهمة: <b>{html.escape(job_title(record))}</b>\n"
+                f"المعرّف: <code>{record.job_id[-12:]}</code>\n"
+                "هذا تأكيد الاستلام؛ ستصلك حالة التنفيذ والنتيجة بشكل منفصل.",
+                buttons=self._job_buttons(record),
+            ):
+                with self._lock:
+                    self._state[key] = True
+                    self._save_state()
 
     def stop(self) -> None:
         self._stop.set()
@@ -324,6 +359,9 @@ class TelegramBot:
         commands = [
             {"command": "menu", "description": "إظهار لوحة التحكم"},
             {"command": "devices", "description": "قائمة أجهزة Antigravity"},
+            {"command": "device", "description": "اختيار جهاز: windows-main أو linux-netcup"},
+            {"command": "last", "description": "آخر رد للجلسة المختارة أو رقم المهمة"},
+            {"command": "shutdown", "description": "إغلاق Antigravity على الجهاز المختار بعد تأكيد"},
             {"command": "new", "description": "بدء محادثة جديدة"},
             {"command": "status", "description": "حالة الجلسة أو المهمة"},
             {"command": "progress", "description": "آخر تقدم"},
@@ -364,12 +402,7 @@ class TelegramBot:
                     if buttons:
                         payload["reply_markup"] = {"inline_keyboard": buttons}
                     elif menu:
-                        payload["reply_markup"] = {
-                            "keyboard": self._menu_keyboard(),
-                            "resize_keyboard": True,
-                            "is_persistent": True,
-                            "input_field_placeholder": "اكتب رسالتك إلى Antigravity أو اختر أمرًا",
-                        }
+                        payload["reply_markup"] = {"remove_keyboard": True}
                 response = self._http.post(
                     f"{self._api}/sendMessage",
                     json=payload,
@@ -621,6 +654,9 @@ class TelegramBot:
             "help": self._help,
             "menu": self._control_panel,
             "devices": self._devices_view,
+            "device": lambda: self._device_select(arg.strip()) if arg.strip() else self._devices_view(),
+            "last": lambda: self._run_background(lambda: self._last_reply(arg.strip() or self._last_reference())),
+            "shutdown": lambda: self._shutdown_prompt(str(self._state.get("active_device_id") or LOCAL_DEVICE_ID)),
             "jobs": self._jobs,
             "status": lambda: self._status(arg),
             "progress": lambda: self._progress(arg),
@@ -634,6 +670,15 @@ class TelegramBot:
             self.send("أمر غير معروف. استخدم /help")
             return
         handler()
+
+    def _last_reference(self) -> str:
+        reference = str(self._state.get("active_job_id") or "")
+        if reference:
+            return reference
+        device = str(self._state.get("active_device_id") or LOCAL_DEVICE_ID)
+        session = self._state.get("active_session_id")
+        return next((r.job_id for r in self._records()
+                     if self._record_device(r) == device and (not session or r.session_id == session)), "")
 
     def _handle_menu_action(self, action: str) -> None:
         if action == "panel":
@@ -724,8 +769,8 @@ class TelegramBot:
 
     def _shutdown_prompt(self, device_id: str) -> None:
         dev = self._get_device_info(device_id)
-        if not dev or dev.get("os") != "Windows" or not dev.get("online"):
-            self.send("الإغلاق الكامل متاح حالياً لجهاز Windows المتصل فقط.")
+        if not dev or dev.get("os") not in {"Windows", "Linux"} or not dev.get("online"):
+            self.send("الإغلاق الكامل متاح لجهاز Windows أو Linux المتصل فقط.")
             return
         token = secrets.token_hex(12)
         with self._lock:
@@ -752,7 +797,11 @@ class TelegramBot:
 
     def _shutdown_device(self, device_id: str) -> None:
         from agy_mcp.device_tools import await_call, submit
-        result = submit(device_id, "shutdown", {"confirm": True})
+        if device_id == LOCAL_DEVICE_ID:
+            from agy_mcp.runtime_control import shutdown_antigravity
+            result = shutdown_antigravity(confirm=True)
+        else:
+            result = submit(device_id, "shutdown", {"confirm": True})
         if result.get("pending"):
             result = await_call(result["request_id"], seconds=30)
         if result.get("success") and not result.get("pending") and not result.get("remaining"):
@@ -888,7 +937,7 @@ class TelegramBot:
         ]
         if not is_active:
             buttons.append([{"text": "✅ تعيين كجهاز نشط", "callback_data": f"dev_use:{device_id}"}])
-        if dev.get("os") == "Windows":
+        if dev.get("os") in {"Windows", "Linux"}:
             buttons.append([{"text": "⏹ إغلاق Antigravity بالكامل", "callback_data": f"stop_ask:{device_id}"}])
         buttons.append([
             {"text": "⬅️ قائمة الأجهزة", "callback_data": "menu:devices"},
@@ -1129,7 +1178,7 @@ class TelegramBot:
         return refreshed
 
     def _help(self) -> None:
-        self.send("<b>أوامر Gumacu Antigravity</b>\n/devices قائمة الأجهزة\n/jobs المهام الجارية\n/status ملخص الجارية\n/status الاسم أو الرقم\n/progress الاسم أو الرقم\n/recent أحدث النتائج\n/new نص الرسالة — جلسة جديدة\n/use الاسم أو الرقم — اختيار جلسة\n/sessions تصفح المحادثات\nأي نص عادي — إرساله للجلسة المختارة", menu=True)
+        self.send("<b>أوامر Gumacu Antigravity</b>\n/devices قائمة الأجهزة\n/device windows-main أو linux-netcup — اختيار الجهاز\n/last آخر رد للجلسة المختارة\n/shutdown إغلاق الجهاز المختار بعد تأكيد\n/jobs المهام الجارية\n/status ملخص الجارية\n/status الاسم أو الرقم\n/progress الاسم أو الرقم\n/recent أحدث النتائج\n/new نص الرسالة — جلسة جديدة\n/use الاسم أو الرقم — اختيار جلسة\n/sessions تصفح المحادثات\nأي نص عادي — إرساله للجلسة المختارة", menu=True)
 
     def _sessions(self) -> None:
         self._session_browser(0)
@@ -1286,6 +1335,7 @@ class TelegramBot:
         req_id = res.get("request_id")
         job_id = "job_r_" + req_id[5:] if req_id and req_id.startswith("call_") else str(req_id)
         self._state["active_job_id"] = job_id
+        self._state.setdefault("telegram_remote_jobs", {})[job_id] = True
         if session_id:
             self._state["active_session_id"] = session_id
             self._state.setdefault("session_devices", {})[session_id] = device_id
@@ -1310,6 +1360,8 @@ class TelegramBot:
             allowed = os.environ.get("GUMACU_ALLOWED_WORKSPACES", "")
             cwd = allowed.split(os.pathsep)[0] if allowed else "."
         try:
+            from agy_mcp.runtime_control import reopen_linux_if_closed
+            reopen_linux_if_closed()
             request = BridgeRequest(prompt=prompt, cwd=cwd, session_id=session_id, mode="long", timeout=0, detach=True, allow_write=False, worktree=False, backend="agy", output_protocol="codex")
             response = self.supervisor.start(request)
         except Exception as exc:  # noqa: BLE001

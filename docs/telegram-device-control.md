@@ -35,9 +35,24 @@ Unknown/custom application paths do not get killed; matching residual names
 cause verification failure instead of false success. The app can be started
 again later. This is not a command to shut down Windows itself.
 
-Full application closure currently supports Windows only. Linux device panels
-do not expose a shutdown button. Selecting Linux from the persistent keyboard
-shows that limitation instead of closing a different device.
+Full closure supports Windows and Linux. Linux stops only the exact
+antigravity-manager.service and trusted agy processes/descendants, preserving
+their MCP/SSH/bot ancestors. PID start identities are rechecked before signals;
+remaining processes and manager state are verified before reporting success.
+A new Telegram task reopens the manager only if this shutdown marked it closed.
+Do not test real shutdown while user tasks are running.
+
+The persistent reply keyboard has been removed at the user's request. Use the
+Telegram command menu: /devices, /device, /new, /use, /sessions, /status,
+/progress, /last, /jobs, /recent, /shutdown and /help. Shutdown confirmation
+remains contextual inside a message, never in a keyboard below the input.
+
+The dedicated bot observes new durable local and remote job records every
+second and sends a one-time receipt for work submitted outside Telegram. It
+does not claim execution has started, replay historical jobs, start another
+getUpdates poller, or restart a busy MCP process. Telegram-origin requests
+retain their existing immediate acknowledgement. Successfully delivered
+receipt IDs are persisted in bot state; failed sends can retry on the next pass.
 
 Deploy the same reviewed agent/broker/bot code, enable the per-device allowlist,
 restart only affected idle services/agent processes, and verify inventory-only
