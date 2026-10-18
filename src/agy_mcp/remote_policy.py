@@ -120,12 +120,11 @@ def restrict_request(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("worktree") and not operator_auth:
         raise ValueError("remote worktree creation is not enabled")
     detach = bool(payload.get("detach", False))
-    # Enforce >=14400 sec default for DETACHED/LONG tasks; short tasks stay at 900s; upper limit 86400s
-    default_timeout = 14400 if (mode == "long" or detach) else 900
+    # No implicit wall-clock timeout. 0 is unlimited; positive limits are opt-in.
     timeout_raw = payload.get("timeout")
-    timeout_val = default_timeout if timeout_raw is None else int(timeout_raw)
-    if not 1 <= timeout_val <= 86400:
-        raise ValueError("remote timeout must be 1..86400 seconds")
+    timeout_val = 0 if timeout_raw is None else int(timeout_raw)
+    if not 0 <= timeout_val <= 86400:
+        raise ValueError("remote timeout must be 0..86400 seconds (0 = unlimited)")
 
     sandbox = not (operator_auth and allow_write)
     worktree = bool(payload.get("worktree", False)) if operator_auth else False
