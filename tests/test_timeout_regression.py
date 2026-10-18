@@ -120,3 +120,47 @@ def test_agy_start_tool_accepts_21600(monkeypatch, tmp_path: Path):
     call_req = mock_supervisor.start.call_args[0][0]
     assert isinstance(call_req, BridgeRequest)
     assert call_req.timeout == 21600
+
+def test_agy_print_command_without_implicit_timeout(monkeypatch):
+    from agy_mcp.adapters.agy import AgyPrintBackend
+    from agy_mcp.models import Capability
+
+    adapter = AgyPrintBackend()
+    cap = Capability(
+        bin_path="/usr/local/bin/agy",
+        backend="agy",
+        supports_print=True,
+        supports_print_timeout=True,
+    )
+    monkeypatch.setattr(adapter, "detect", lambda: cap)
+    unlimited = adapter.build_command(BridgeRequest(prompt="go"), log_path=None)
+    assert "--print-timeout" not in unlimited
+
+    finite = adapter.build_command(BridgeRequest(prompt="go", timeout=120), log_path=None)
+    idx = finite.index("--print-timeout")
+    assert finite[idx + 1] == "90s"
+
+
+def test_device_tools_accept_explicit_unlimited(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        device_tools,
+        "submit",
+        lambda device, action, payload: calls.append((device, action, payload)) or {"success": True},
+    )
+    available = {}
+
+    class DummyMcp:
+        def tool(self, *, name):
+            def decorator(fn):
+                available[name] = fn
+                return fn
+            return decorator
+
+    device_tools.register_device_tools(DummyMcp())
+    start = available["agy_device_start"]
+    cont = available["agy_device_continue"]
+    assert start(device_id="windows-main", PROMPT="test", timeout=0)["success"]
+    assert calls[-1][2]["timeout"] == 0
+    assert cont(device_id="windows-main", SESSION_ID="sess_123", PROMPT="continue", timeout=0)["success"]
+    assert calls[-1][2]["timeout"] == 0
