@@ -119,7 +119,6 @@ def restrict_request(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("this remote endpoint permits only the agy backend")
     if payload.get("worktree") and not operator_auth:
         raise ValueError("remote worktree creation is not enabled")
-    detach = bool(payload.get("detach", False))
     # No implicit wall-clock timeout. 0 is unlimited; positive limits are opt-in.
     timeout_raw = payload.get("timeout")
     timeout_val = 0 if timeout_raw is None else int(timeout_raw)
