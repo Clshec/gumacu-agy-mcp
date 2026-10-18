@@ -29,14 +29,14 @@ jobs:
             await core.summary
               .addHeading("🚀 ChatGPT MCP Client Refresh & Release Gate", 2)
               .addRaw(`**Release Commit:** [${shortSha}](${release})\n\n`)
-              .addRaw(`> [!IMPORTANT]\n> ChatGPT may retain an approved/frozen MCP action snapshot. Restarting the tunnel or server does not guarantee client refresh. Verify client tool visibility in a **new chat session** after updating.\n\n`)
+              .addRaw(`> [!IMPORTANT]\n> Deploy/reload MCP, then use Settings → Plugins → netcup → Refresh tools for changed definitions. Verify callable inventory and native invocation in the existing conversation; a new conversation is a fallback. Readiness or UI visibility alone is insufficient.\n\n`)
               .addHeading("📋 Acceptance Checklist", 3)
               .addRaw([
                 "- [ ] **Runtime SHA:** Verify deployed commit on host matches released SHA",
-                "- [ ] **Production MCP Endpoint:** Run `tools/list` on host endpoint to confirm 26+ tools exposed",
-                "- [ ] **Windows Tunnel:** If ChatGPT still shows legacy tools, terminate stale `tunnel-client.exe`/`ssh.exe` and re-run starter script",
-                "- [ ] **Client Snapshot:** Update/refresh actions in ChatGPT App Settings if needed and start a new chat",
-                "- [ ] **Tool Visibility:** Confirm `agy_devices` and multi-device tools are visible to ChatGPT",
+                "- [ ] **Production MCP Endpoint:** Verify expected names/schemas with `tools/list`, including `agy_capabilities` and `agy_dispatch`",
+                "- [ ] **Windows Tunnel:** Reload only the managed gumacu-netcup runtime when needed; preserve jobs, agent SSH and the independent Telegram poller",
+                "- [ ] **Client Snapshot:** Refresh netcup tool definitions in ChatGPT settings, allow inventory propagation and recheck",
+                "- [ ] **Tool Visibility:** Invoke `agy_capabilities` and `agy_dispatch` through the assistant's native connector; SSH or UI checks alone do not count",
                 "- [ ] **Windows E2E & Telegram:** Confirm remote task execution and Telegram notification delivery"
               ].join("\n"))
               .addRaw(`\n\n📖 **Release Runbook:** [docs/chatgpt-mcp-client-refresh.md](${guide})\n`)
