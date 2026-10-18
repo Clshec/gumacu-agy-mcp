@@ -14,6 +14,7 @@ def remote_bot(tmp_path: Path, monkeypatch, reply):
         extra={"device_id": "windows-main", "summary": "Remote task on windows-main reached completed."},
     )
     bot, sent = make_test_bot(tmp_path, store=DummyStore([record]))
+    monkeypatch.setattr(bot, "_records", lambda: [record])
     bot._state["active_device_id"] = "another-device"
     calls = []
 
