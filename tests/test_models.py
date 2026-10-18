@@ -29,7 +29,7 @@ def test_bridge_request_defaults_are_safe():
     assert req.worktree is None  # signals "use config default"
     assert req.backend == "auto"
     assert req.output_protocol == "claude"
-    assert req.timeout == 900
+    assert req.timeout == 0
     assert req.max_output_chars == 60_000
 
 
@@ -40,9 +40,8 @@ def test_bridge_request_rejects_empty_prompt():
         BridgeRequest(prompt="   \n\t")
 
 
-def test_bridge_request_rejects_non_positive_timeout():
-    with pytest.raises(ValidationError):
-        BridgeRequest(prompt="x", timeout=0)
+def test_bridge_request_allows_zero_but_rejects_negative_timeout():
+    assert BridgeRequest(prompt="x", timeout=0).timeout == 0
     with pytest.raises(ValidationError):
         BridgeRequest(prompt="x", timeout=-1)
 
