@@ -227,7 +227,7 @@ class GeminiCliBackend(BaseAdapter):
         stdout_thread.start()
         stderr_thread.start()
 
-        deadline = start + max(request.timeout, 1)
+        deadline = start + request.timeout if request.timeout > 0 else None
         exit_code: int | None = None
         timed_out = False
         cancelled = False
@@ -260,7 +260,7 @@ class GeminiCliBackend(BaseAdapter):
                     # cancel just initiated the cascade.
                     exit_code = _shutdown_cascade(proc, escalation_cancel_event=None)
                     break
-                if time.time() >= deadline:
+                if deadline is not None and time.time() >= deadline:
                     timed_out = True
                     self._emit(
                         ctx,
