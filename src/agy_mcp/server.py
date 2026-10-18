@@ -46,6 +46,7 @@ from agy_mcp.adapters.agy import AgyPrintBackend
 from agy_mcp.adapters.gemini import GeminiCliBackend
 from agy_mcp.adapters.protocol import ProtocolTranslator
 from agy_mcp.bridge import _run as _bridge_run
+from agy_mcp.capability_gateway import register_capability_tools
 from agy_mcp.config import Config, get_config
 from agy_mcp.device_tools import register_device_tools
 from agy_mcp.doctor import run_doctor
@@ -1646,6 +1647,21 @@ def agy_pipeline_cancel(pipeline_id: str) -> dict[str, Any]:
 
 # Optional Windows/Linux multi-device layer. Legacy agy_* tools remain local.
 register_device_tools(mcp)
+
+# Stable facade: these two MCP schemas stay constant when the broker's
+# allowlisted devices/actions change.  Legacy tools remain available.
+register_capability_tools(
+    mcp,
+    {
+        "start": agy_start_tool,
+        "status": agy_status_tool,
+        "read": agy_read_tool,
+        "result": agy_result_tool,
+        "cancel": agy_cancel_tool,
+        "sessions": agy_sessions_tool,
+        "doctor": lambda: asyncio.run(agy_doctor_tool()),
+    },
+)
 
 
 def run(transport: str = "stdio", port: int = 8765) -> None:
