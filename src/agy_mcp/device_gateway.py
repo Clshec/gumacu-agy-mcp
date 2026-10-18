@@ -254,7 +254,7 @@ class Broker:
                 job_id = str(rec["job_id"])
             elif action == "start":
                 job_id = "job_r_" + ident[5:]
-            elif isinstance(row.get("payload"), str):
+            elif isinstance(row["payload"], str):
                 try:
                     p = json.loads(row["payload"])
                     if p.get("job_id"):
