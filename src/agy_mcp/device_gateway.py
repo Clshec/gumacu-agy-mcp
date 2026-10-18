@@ -369,6 +369,7 @@ class Broker:
         now = time.time()
         return [{"id": k, "os": v["os"], "online": k in seen and now - seen[k]["seen"] < 35,
                  "last_seen": seen[k]["seen"] if k in seen else None,
+                 "allowed_actions": sorted(v["allowed_actions"]),
                  "capabilities": json.loads(seen[k]["capabilities"]) if k in seen else {}}
                 for k, v in sorted(self.devices.items())]
 
