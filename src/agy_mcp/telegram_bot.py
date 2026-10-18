@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -38,6 +39,7 @@ MENU_ACTIONS = {
     "➕ جلسة جديدة": "new_help",
     "📚 اختيار جلسة": "sessions",
     "❓ المساعدة": "help",
+    "⏹ إغلاق Antigravity": "shutdown",
 }
 
 
@@ -157,6 +159,8 @@ class TelegramBot:
         self._state = self._load_state()
         self._thread: threading.Thread | None = None
         self._progress_thread: threading.Thread | None = None
+        self._shutdown_confirmations: dict[str, tuple[str, float]] = {}
+        self._http: Any = httpx  # Unstarted instances remain simple to test.
         try:
             self.progress_interval = max(
                 30.0,
@@ -291,6 +295,7 @@ class TelegramBot:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._http = httpx.Client(timeout=10.0)
         self._thread = threading.Thread(target=self._poll_loop, name="agy-telegram-control", daemon=True)
         self._thread.start()
         self._configure_commands()
@@ -312,6 +317,7 @@ class TelegramBot:
             [{"text": "💬 آخر رد"}, {"text": "🔄 المهام الجارية"}],
             [{"text": "🕘 المهام الأخيرة"}, {"text": "➕ جلسة جديدة"}],
             [{"text": "📚 اختيار جلسة"}, {"text": "❓ المساعدة"}],
+            [{"text": "⏹ إغلاق Antigravity"}],
         ]
 
     def _configure_commands(self) -> None:
@@ -328,7 +334,7 @@ class TelegramBot:
             {"command": "help", "description": "شرح الاستخدام"},
         ]
         try:
-            httpx.post(
+            self._http.post(
                 f"{self._api}/setMyCommands",
                 json={"commands": commands},
                 timeout=10.0,
@@ -364,7 +370,7 @@ class TelegramBot:
                             "is_persistent": True,
                             "input_field_placeholder": "اكتب رسالتك إلى Antigravity أو اختر أمرًا",
                         }
-                response = httpx.post(
+                response = self._http.post(
                     f"{self._api}/sendMessage",
                     json=payload,
                     timeout=10.0,
@@ -559,7 +565,7 @@ class TelegramBot:
         while not self._stop.is_set():
             try:
                 offset = int(self._state.get("offset", 0))
-                response = httpx.get(f"{self._api}/getUpdates", params={"offset": offset, "timeout": 20, "allowed_updates": json.dumps(["message", "callback_query"])}, timeout=self.timeout)
+                response = self._http.get(f"{self._api}/getUpdates", params={"offset": offset, "timeout": 20, "allowed_updates": json.dumps(["message", "callback_query"])}, timeout=self.timeout)
                 response.raise_for_status()
                 payload = response.json()
                 for update in payload.get("result", []):
@@ -575,7 +581,7 @@ class TelegramBot:
         """Pin the initial offset after the newest update without executing history."""
 
         try:
-            response = httpx.get(
+            response = self._http.get(
                 f"{self._api}/getUpdates",
                 params={"offset": -1, "limit": 1, "timeout": 0},
                 timeout=10.0,
@@ -637,7 +643,8 @@ class TelegramBot:
         elif action == "active_status":
             self._send_one(str(self._state.get("active_job_id") or ""))
         elif action == "active_last":
-            self._last_reply(str(self._state.get("active_job_id") or ""))
+            reference = str(self._state.get("active_job_id") or "")
+            self._run_background(lambda: self._last_reply(reference))
         elif action == "jobs":
             self._jobs()
         elif action == "recent":
@@ -647,6 +654,8 @@ class TelegramBot:
             self.send(f"الجهاز النشط: <code>{html.escape(active_dev)}</code>\nلبدء جلسة جديدة اكتب:\n<code>/new رسالتك</code>", menu=True)
         elif action == "sessions":
             self._sessions()
+        elif action == "shutdown":
+            self._shutdown_prompt(str(self._state.get("active_device_id") or LOCAL_DEVICE_ID))
         else:
             self._help()
 
@@ -658,7 +667,9 @@ class TelegramBot:
         callback_id = callback.get("id")
         if isinstance(callback_id, str):
             try:
-                httpx.post(f"{self._api}/answerCallbackQuery", json={"callback_query_id": callback_id}, timeout=5.0)
+                # Acknowledgement must not delay routing or remote result reads.
+                self._run_background(lambda: self._http.post(
+                    f"{self._api}/answerCallbackQuery", json={"callback_query_id": callback_id}, timeout=5.0))
             except Exception:
                 pass
         data = callback.get("data")
@@ -668,7 +679,16 @@ class TelegramBot:
         if action == "status":
             self._send_one(reference)
         elif action == "last":
-            self._last_reply(reference)
+            self._run_background(lambda: self._last_reply(reference))
+        elif action == "stop_ask":
+            self._shutdown_prompt(reference)
+        elif action == "stop_ok":
+            self._shutdown_confirm(reference)
+        elif action == "stop_no":
+            with self._lock:
+                pending = self._shutdown_confirmations.pop(reference, None)
+            if pending:
+                self._device_panel(pending[0])
         elif action == "use":
             self._use(reference)
         elif action == "menu":
@@ -692,6 +712,53 @@ class TelegramBot:
             self._device_recent(reference)
         elif action == "dev_use":
             self._device_select(reference)
+
+    @staticmethod
+    def _run_background(fn: Any) -> None:
+        def work() -> None:
+            try:
+                fn()
+            except Exception as exc:
+                logger.warning("Telegram background action failed: %s", type(exc).__name__)
+        threading.Thread(target=work, name="agy-telegram-action", daemon=True).start()
+
+    def _shutdown_prompt(self, device_id: str) -> None:
+        dev = self._get_device_info(device_id)
+        if not dev or dev.get("os") != "Windows" or not dev.get("online"):
+            self.send("الإغلاق الكامل متاح حالياً لجهاز Windows المتصل فقط.")
+            return
+        token = secrets.token_hex(12)
+        with self._lock:
+            now = time.monotonic()
+            self._shutdown_confirmations = {k: v for k, v in self._shutdown_confirmations.items() if v[1] > now}
+            self._shutdown_confirmations[token] = (device_id, now + 120)
+        self.send(
+            f"⚠️ إغلاق Antigravity بالكامل على <code>{html.escape(device_id)}</code>؟\n"
+            "سيوقف جميع مهامه الجارية ويغلق التطبيق وعملياته الخلفية على هذا الجهاز فقط. "
+            "ستبقى المحادثات محفوظة ووكيل الاتصال يعمل. قد تفقد تعديلات غير محفوظة في التطبيق.",
+            buttons=[[{"text": "⏹ تأكيد الإغلاق الكامل", "callback_data": f"stop_ok:{token}"}],
+                     [{"text": "رجوع دون إغلاق", "callback_data": f"stop_no:{token}"}]],
+        )
+
+    def _shutdown_confirm(self, token: str) -> None:
+        with self._lock:
+            pending = self._shutdown_confirmations.pop(token, None)
+        if pending is None or pending[1] <= time.monotonic():
+            self.send("انتهت صلاحية التأكيد أو استُخدم بالفعل؛ افتح زر الإغلاق مرة أخرى.")
+            return
+        device_id = pending[0]  # Never use the possibly changed active device.
+        self.send(f"⏳ جارٍ إغلاق Antigravity على <code>{html.escape(device_id)}</code>…")
+        self._run_background(lambda: self._shutdown_device(device_id))
+
+    def _shutdown_device(self, device_id: str) -> None:
+        from agy_mcp.device_tools import await_call, submit
+        result = submit(device_id, "shutdown", {"confirm": True})
+        if result.get("pending"):
+            result = await_call(result["request_id"], seconds=30)
+        if result.get("success") and not result.get("pending") and not result.get("remaining"):
+            self.send(f"✅ أُغلق Antigravity بالكامل على <code>{html.escape(device_id)}</code>. وكيل الاتصال ما زال يعمل.")
+        else:
+            self.send(f"⚠️ لم أتمكن من تأكيد الإغلاق الكامل على <code>{html.escape(device_id)}</code>. راجع حالة الجهاز؛ لن أعرض نجاحاً غير مؤكد.")
 
     def _handle_panel_callback(self, reference: str) -> None:
         section, _, page_text = reference.partition(":")
@@ -821,6 +888,8 @@ class TelegramBot:
         ]
         if not is_active:
             buttons.append([{"text": "✅ تعيين كجهاز نشط", "callback_data": f"dev_use:{device_id}"}])
+        if dev.get("os") == "Windows":
+            buttons.append([{"text": "⏹ إغلاق Antigravity بالكامل", "callback_data": f"stop_ask:{device_id}"}])
         buttons.append([
             {"text": "⬅️ قائمة الأجهزة", "callback_data": "menu:devices"},
             {"text": "🏠 الرئيسية", "callback_data": "menu:home"},

@@ -411,6 +411,7 @@ def test_release_cli_preserves_required_skills_when_source_and_artifact_are_miss
         "agy_mcp/notifications.py",
         "agy_mcp/orchestrator.py",
         "agy_mcp/remote_policy.py",
+    "agy_mcp/runtime_control.py",
         "agy_mcp/telegram_bot.py",
         "agy_mcp/__init__.py",
         "agy_mcp/__main__.py",
