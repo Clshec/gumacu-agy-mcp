@@ -17,7 +17,6 @@ Strategy (see docs/output-strategy.md for the full rationale):
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
 import os
 import re
@@ -26,17 +25,18 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from agy_mcp.adapters.base import (
     _MAX_LINE_BYTES,
+    _RunContext,
+    _drain_stream,
+    _process_group_kwargs,
+    _shutdown_cascade,
     AdapterRunResult,
     BaseAdapter,
     EventSink,
-    _drain_stream,
-    _process_group_kwargs,
-    _RunContext,
-    _shutdown_cascade,
     has_flag,
     resolve_cwd,
 )
