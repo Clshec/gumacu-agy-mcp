@@ -99,10 +99,10 @@ def register_device_tools(mcp: Any) -> None:
     def agy_device_start(
         device_id: str, PROMPT: str, cwd: str = ".",
         SESSION_ID: str | None = None, mode: str = "ask",
-        allow_write: bool = False, timeout: int = 14400,
+        allow_write: bool = False, timeout: int = 0,
     ) -> dict[str, Any]:
         """Start Antigravity on an explicitly selected device; original agy_start stays Linux-local."""
-        if mode not in {"ask", "plan", "long", "execute"} or not 1 <= timeout <= 86400:
+        if mode not in {"ask", "plan", "long", "execute"} or not 0 <= timeout <= 86400:
             return {"success": False, "error": "invalid mode or timeout"}
         return submit(device_id, "start",
                       {"PROMPT": PROMPT, "cwd": cwd, "SESSION_ID": SESSION_ID,
@@ -112,12 +112,12 @@ def register_device_tools(mcp: Any) -> None:
     def agy_device_continue(
         device_id: str, SESSION_ID: str, PROMPT: str,
         cwd: str = ".", mode: str = "ask", allow_write: bool = False,
-        timeout: int = 14400,
+        timeout: int = 0,
     ) -> dict[str, Any]:
         """Resume exactly the given device's Antigravity session as a detached job."""
         if not SESSION_ID:
             return {"success": False, "error": "SESSION_ID required"}
-        if mode not in {"ask", "plan", "long", "execute"} or not 1 <= timeout <= 86400:
+        if mode not in {"ask", "plan", "long", "execute"} or not 0 <= timeout <= 86400:
             return {"success": False, "error": "invalid mode or timeout"}
         return submit(device_id, "start",
                       {"PROMPT": PROMPT, "SESSION_ID": SESSION_ID,
