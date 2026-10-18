@@ -415,6 +415,12 @@ def test_remote_telegram_bot_callbacks(test_env, monkeypatch: pytest.MonkeyPatch
     safety = SafetyPolicy()
     state_path = tmp_path / "telegram_state.json"
     bot = TelegramBot(token="dummy", chat_id="902051097", store=store, supervisor=None, safety=safety, state_path=state_path)
+    monkeypatch.setattr(bot, "_run_background", lambda fn: fn(), raising=False)
+    def read_result(device, action, payload):
+        assert device == "windows-main" and action == "result"
+        assert payload == {"job_id": job_id}
+        return {"success": True, "result_text": "Callback execution finished successfully"}
+    monkeypatch.setattr("agy_mcp.device_tools.submit", read_result)
 
     sent = []
     bot.send = lambda msg, buttons=None, menu=False: sent.append((msg, buttons))
