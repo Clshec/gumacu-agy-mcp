@@ -223,7 +223,7 @@ def test_parser_round_trip_defaults():
     assert args.cd == "."
     assert args.mode == "ask"
     assert args.SESSION_ID is None
-    assert args.timeout == 900
+    assert args.timeout == 0
     assert args.worktree == "default"
     assert args.backend is None
     assert args.output_protocol is None
