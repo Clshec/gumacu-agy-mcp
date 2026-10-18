@@ -9,21 +9,21 @@ from agy_mcp import server
 
 
 def test_bridge_request_timeout_defaults_and_gates():
-    # Detached or long task defaults to 14400s
-    assert BridgeRequest(prompt="test", mode="long").timeout == 14400
-    assert BridgeRequest(prompt="test", detach=True).timeout == 14400
-    # Short tasks stay at 900s
-    assert BridgeRequest(prompt="test", mode="ask").timeout == 900
+    # No jobs have a wall-clock limit unless the caller chooses one.
+    assert BridgeRequest(prompt="test", mode="long").timeout == 0
+    assert BridgeRequest(prompt="test", detach=True).timeout == 0
+    assert BridgeRequest(prompt="test", mode="ask").timeout == 0
     # Explicit custom timeout accepted up to 86400
     assert BridgeRequest(prompt="test", timeout=21600).timeout == 21600
     assert BridgeRequest(prompt="test", timeout=86400).timeout == 86400
     assert BridgeRequest(prompt="test", timeout=60, detach=True).timeout == 60
 
-    # Over 86400 or non-positive rejected
+    # Explicit finite limits are supported; unlimited is zero.
     with pytest.raises(ValueError, match="timeout exceeds 86400 seconds"):
         BridgeRequest(prompt="test", timeout=86401)
-    with pytest.raises(ValueError, match="timeout must be positive seconds"):
-        BridgeRequest(prompt="test", timeout=0)
+    assert BridgeRequest(prompt="test", timeout=0).timeout == 0
+    with pytest.raises(ValueError, match="timeout must be nonnegative seconds"):
+        BridgeRequest(prompt="test", timeout=-1)
 
 
 def test_device_tools_timeout_gates(monkeypatch):
@@ -56,20 +56,20 @@ def test_device_tools_timeout_gates(monkeypatch):
     assert res["success"] is True
     assert captured_payload["timeout"] == 21600
 
-    # Default timeout is 14400
+    # Default timeout is unlimited
     res = start_fn(device_id="windows-main", PROMPT="test prompt")
     assert res["success"] is True
-    assert captured_payload["timeout"] == 14400
+    assert captured_payload["timeout"] == 0
 
     # 86401 rejected
     res = start_fn(device_id="windows-main", PROMPT="test prompt", timeout=86401)
     assert res["success"] is False
     assert res["error"] == "invalid mode or timeout"
 
-    # continue tool default timeout is 14400
+    # Continue defaults to unlimited
     res = cont_fn(device_id="windows-main", SESSION_ID="sess_123", PROMPT="continue prompt")
     assert res["success"] is True
-    assert captured_payload["timeout"] == 14400
+    assert captured_payload["timeout"] == 0
 
 
 def test_device_agent_start_timeout(monkeypatch):
@@ -89,10 +89,10 @@ def test_device_agent_start_timeout(monkeypatch):
     assert res["success"] is True
     assert captured_args["timeout"] == 21600
 
-    # Dispatch without timeout defaults to 14400
+    # Dispatch without timeout defaults to unlimited
     res = device_agent.dispatch("start", {"PROMPT": "run"}, "call_1234567890abcdef1234567890abcdef")
     assert res["success"] is True
-    assert captured_args["timeout"] == 14400
+    assert captured_args["timeout"] == 0
 
 
 def test_agy_start_tool_accepts_21600(monkeypatch, tmp_path: Path):
