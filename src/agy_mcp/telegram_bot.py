@@ -1012,7 +1012,20 @@ class TelegramBot:
                 self.send("لم أجد المهمة المرتبطة بهذه الرسالة.")
             return
         if self._is_remote_record(record):
-            text = record.extra.get("summary")
+            # Lifecycle summaries describe progress/completion, not the answer.
+            # Fetch the result from the immutable owner, even after device switch.
+            from agy_mcp.device_tools import submit
+
+            result = submit(self._record_device(record), "result", {"job_id": record.job_id})
+            if result.get("pending"):
+                self.send("جارٍ جلب الرد من الجهاز؛ اضغط «آخر رد» مرة أخرى بعد قليل.", buttons=self._job_buttons(record))
+                return
+            if not result.get("success"):
+                self.send("تعذر جلب الرد من الجهاز حالياً. حاول مرة أخرى بعد التأكد من اتصاله.", buttons=self._job_buttons(record))
+                return
+            text = result.get("result_text")
+            if not isinstance(text, str):
+                text = None
         else:
             events = self.store.read_events(record.job_id)
             text = next((event.text for event in reversed(events) if event.type == "assistant" and event.text), None)
