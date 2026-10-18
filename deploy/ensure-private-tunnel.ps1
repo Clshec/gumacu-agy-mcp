@@ -26,7 +26,24 @@ New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 try {
     $statusText = & $client runtimes status $Alias --json 2>$null
     $status = $statusText | ConvertFrom-Json
-    if ($status.process_running -and $status.healthy -and $status.ready) { exit 0 }
+    $protocolHealthy = $true
+    if ($status.mcp_health_url) {
+        try {
+            $mcpHealth = Invoke-RestMethod -Uri $status.mcp_health_url -TimeoutSec 5
+            # not_observed is normal before the first client call. A dead child
+            # or explicit protocol failure must not be hidden by readyz.
+            if ($mcpHealth.status -in @('unhealthy', 'failed', 'error') -or
+                ($mcpHealth.details.child_state -and $mcpHealth.details.child_state -ne 'running')) {
+                $protocolHealthy = $false
+            }
+        } catch { $protocolHealthy = $false }
+    }
+    if ($status.process_running -and $status.healthy -and $status.ready -and $protocolHealthy) { exit 0 }
+
+    if ($status.process_running) {
+        & $client runtimes stop $Alias --json | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to stop the unhealthy managed runtime.' }
+    }
 
     & $StarterScript -RuntimeDirectory $runtime -TunnelId $TunnelId | Out-Null
     $statusText = & $client runtimes status $Alias --json 2>$null
