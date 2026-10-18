@@ -21,7 +21,7 @@ def test_defaults_force_safe_arguments(approved):
 @pytest.mark.parametrize("override", [
     {"allow_write": True}, {"mode": "execute"}, {"backend": "gemini"},
     {"extra_env": {"HOME": "/root"}}, {"worktree": True}, {"timeout": 86401},
-    {"timeout": 0}, {"timeout": -1},
+    {"timeout": -1},
 ])
 def test_remote_override_rejection(approved, override):
     with pytest.raises(ValueError):
@@ -39,12 +39,10 @@ def test_remote_policy_timeout_gates_and_defaults(approved):
     # Short explicit health check preserved
     assert restrict_request({"cwd": ".", "prompt": "health check", "timeout": 60})["timeout"] == 60
 
-    # DETACHED and LONG tasks default to >=14400s
-    assert restrict_request({"cwd": ".", "prompt": "long mode", "mode": "long"})["timeout"] == 14400
-    assert restrict_request({"cwd": ".", "prompt": "detached", "detach": True})["timeout"] == 14400
-
-    # Existing short tasks stay short (900s)
-    assert restrict_request({"cwd": ".", "prompt": "short task"})["timeout"] == 900
+    # Long, detached, and normal runs all default to unlimited.
+    assert restrict_request({"cwd": ".", "prompt": "long mode", "mode": "long"})["timeout"] == 0
+    assert restrict_request({"cwd": ".", "prompt": "detached", "detach": True})["timeout"] == 0
+    assert restrict_request({"cwd": ".", "prompt": "short task"})["timeout"] == 0
 
 
 def test_outside_workspace_rejected(approved):
