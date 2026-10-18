@@ -170,7 +170,7 @@ def test_periodic_update_is_sent_only_after_interval(tmp_path: Path, monkeypatch
     assert "Server load investigation" in sent[0]
 
 
-def test_persistent_menu_is_attached_below_the_chat(tmp_path: Path, monkeypatch):
+def test_command_menu_removes_legacy_keyboard(tmp_path: Path, monkeypatch):
     store = FakeStore([])
     bot = make_bot(tmp_path, store)
     captured = {}
@@ -188,12 +188,7 @@ def test_persistent_menu_is_attached_below_the_chat(tmp_path: Path, monkeypatch)
     monkeypatch.setattr("agy_mcp.telegram_bot.httpx.post", fake_post)
     assert bot.send("menu", menu=True) is True
 
-    keyboard = captured["reply_markup"]["keyboard"]
-    labels = {button["text"] for row in keyboard for button in row}
-    assert "📋 حالة الجلسة" in labels
-    assert "💬 آخر رد" in labels
-    assert "➕ جلسة جديدة" in labels
-    assert captured["reply_markup"]["is_persistent"] is True
+    assert captured["reply_markup"] == {"remove_keyboard": True}
 
 
 def test_long_reply_is_delivered_in_full_numbered_chunks(tmp_path: Path, monkeypatch):

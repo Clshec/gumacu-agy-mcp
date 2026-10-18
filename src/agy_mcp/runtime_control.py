@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import os
 import platform
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 WINDOWS_CONTROL = r'''
@@ -49,11 +51,94 @@ if ($env:AGY_SHUTDOWN_DRY_RUN -ne '1') { $remaining += $unknown }
 '''
 
 
+def _linux_identity(pid: int) -> tuple[str, str] | None:
+    try:
+        entry = Path("/proc") / str(pid)
+        return (str((entry / "exe").resolve(strict=True)),
+                (entry / "stat").read_text().rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _linux_targets() -> dict[int, tuple[str, str]]:
+    targets: dict[int, tuple[str, str]] = {}
+    processes = {}
+    protected = {os.getpid(), os.getppid()}
+    roots = (Path.home() / ".gemini/antigravity-cli/bin",)
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) in protected:
+            continue
+        try:
+            identity = _linux_identity(int(entry.name))
+            if identity is None:
+                continue
+            executable = Path(identity[0])
+            ppid = int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
+            processes[int(entry.name)] = (ppid, identity)
+            if executable == Path("/usr/local/bin/agy") or any(executable.is_relative_to(root) for root in roots):
+                targets[int(entry.name)] = identity
+        except (OSError, ValueError, IndexError):
+            continue
+    # Descendants belong to these jobs, but ancestors (SSH/MCP/bot) never do.
+    while True:
+        children = {pid: identity for pid, (ppid, identity) in processes.items()
+                    if ppid in targets and pid not in targets and pid not in protected}
+        if not children:
+            break
+        targets.update(children)
+    return targets
+
+
+def _shutdown_linux(dry_run: bool) -> dict:
+    targets = _linux_targets()
+    service = ["/usr/bin/systemctl", "is-active", "antigravity-manager.service"]
+    manager_active = subprocess.run(service, capture_output=True, timeout=10).returncode == 0
+    if not dry_run:
+        # Explicit stop suppresses Restart=always; it does not disable autostart.
+        stopped = subprocess.run(["/usr/bin/systemctl", "stop", "antigravity-manager.service"],
+                                 capture_output=True, timeout=30)
+        if stopped.returncode != 0:
+            return {"success": False, "error": "could not stop the Antigravity manager"}
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            for pid, identity in targets.items():
+                if _linux_identity(pid) == identity:
+                    try:
+                        os.kill(pid, sig)
+                    except ProcessLookupError:
+                        pass
+            if sig == signal.SIGTERM:
+                time.sleep(1)
+        manager_active = subprocess.run(service, capture_output=True, timeout=10).returncode == 0
+    remaining = _linux_targets()
+    remaining.update({pid: identity for pid, identity in targets.items() if _linux_identity(pid) == identity})
+    if not dry_run and not remaining and not manager_active:
+        root = os.environ.get("AGY_MCP_SESSION_ROOT")
+        if root:
+            (Path(root) / ".antigravity-closed").touch()
+    return {"success": dry_run or (not remaining and not manager_active), "dry_run": dry_run,
+            "targeted": [{"pid": pid, "name": Path(value[0]).name} for pid, value in targets.items()],
+            "remaining": [{"pid": pid, "name": Path(value[0]).name} for pid, value in remaining.items()],
+            "manager_active": manager_active}
+
+
+def reopen_linux_if_closed() -> None:
+    root = os.environ.get("AGY_MCP_SESSION_ROOT")
+    marker = Path(root) / ".antigravity-closed" if root else None
+    if platform.system() == "Linux" and marker and marker.exists():
+        result = subprocess.run(["/usr/bin/systemctl", "start", "antigravity-manager.service"],
+                                capture_output=True, timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError("could not reopen the Antigravity manager")
+        marker.unlink(missing_ok=True)
+
+
 def shutdown_antigravity(*, confirm: bool = False, dry_run: bool = False) -> dict:
     if not dry_run and confirm is not True:
         return {"success": False, "error": "explicit confirmation required"}
+    if platform.system() == "Linux":
+        return _shutdown_linux(dry_run)
     if platform.system() != "Windows":
-        return {"success": False, "error": "full application shutdown is currently supported on Windows only"}
+        return {"success": False, "error": "unsupported operating system"}
     cancelled = []
     if not dry_run:
         from agy_mcp.server import _ensure_state
