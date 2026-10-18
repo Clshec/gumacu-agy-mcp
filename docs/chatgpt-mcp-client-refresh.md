@@ -58,6 +58,31 @@ The old runbook's fixed port, broad process termination, mandatory new-chat step
 
 ## Future updates
 
+### Windows agents must receive policy changes too
+
+On 18 October a Telegram-started Windows session failed with
+`remote timeout must be 1..1200 seconds` even though Linux had already accepted
+`timeout=0` (unlimited). The installed Windows agent source was still commit
+`ddbba53`; Linux was `fe0734d`. Both could report package version `0.1.18`, so
+the version string alone did not reveal the drift.
+
+For policy/protocol changes, verify the actual Windows scheduled task action,
+its interpreter and imported source checkout. Packaged Codex may use the
+per-app LocalCache installation rather than the similarly named ordinary
+LocalAppData folder. Back up the real source and settings. Check active Windows
+jobs before stopping its agent, retain its state database, credential and SSH
+forward, update to the reviewed server-compatible commit, reinstall in that
+agent's existing venv, and restart ONLY its scheduled agent/worker processes.
+Do not cancel active jobs or restart the ChatGPT tunnel/Telegram poller for a
+Windows-only source update.
+
+Run `tests/test_remote_policy.py` and `tests/test_timeout_regression.py` using
+the agent interpreter. Then execute a harmless native
+`agy_device_start(device_id="windows-main", timeout=0)` and verify its stored
+timeout, terminal result, and broker/Telegram delivery as applicable. Record
+the source SHA on BOTH devices as a release gate. Do not reduce the timeout to
+1200 as a workaround; that hides an outdated agent and restores an unwanted cap.
+
 | Change | Procedure |
 |---|---|
 | New public MCP tool or changed schema/description | Deploy/reload MCP, refresh ChatGPT registration, verify native invocation |
