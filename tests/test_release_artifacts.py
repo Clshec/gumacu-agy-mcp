@@ -416,6 +416,7 @@ def test_release_cli_preserves_required_skills_when_source_and_artifact_are_miss
         "agy_mcp/server.py",
         "agy_mcp/bridge.py",
         "agy_mcp/cli.py",
+        "agy_mcp/stdio_reconnect.py",
         "agy_mcp/config.py",
         "agy_mcp/doctor.py",
         "agy_mcp/install.py",
