@@ -10,12 +10,15 @@ import datetime
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
 import sqlite3
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -613,7 +616,7 @@ def make_handler(broker: Broker, admin_token: str):
     return Handler
 
 
-def load_remote_jobs_as_records(db_path: Path | str | None = None) -> list[JobRecord]:
+def load_remote_jobs_as_records(db_path: Path | str | None = None, limit: int = 100) -> list[JobRecord]:
     path = Path(db_path or os.environ.get("AGY_DEVICE_GATEWAY_DB", "/var/lib/gumacu-agy-devices/broker.sqlite"))
     if not path.is_file():
         return []
@@ -628,7 +631,8 @@ def load_remote_jobs_as_records(db_path: Path | str | None = None) -> list[JobRe
                 rows = conn.execute(
                     "SELECT job_id, device, request_id, session_id, task_label, antigravity_title, "
                     "title_source, prompt, status, started_at, updated_at, finished_at, summary "
-                    "FROM remote_lifecycle ORDER BY updated_at DESC LIMIT 50"
+                    "FROM remote_lifecycle ORDER BY updated_at DESC LIMIT ?",
+                    (max(1, limit),),
                 ).fetchall()
         finally:
             conn.close()
@@ -670,8 +674,93 @@ def load_remote_jobs_as_records(db_path: Path | str | None = None) -> list[JobRe
             records.append(rec)
         return records
     except Exception as exc:
-        logger.warning("Failed to load remote jobs as records: %s", exc)
+        logger.error("Failed to load remote jobs as records: %s", exc, exc_info=True)
         return []
+
+
+def get_session_affinity(session_id: str, db_path: Path | str | None = None) -> str | None:
+    if not session_id:
+        return None
+    path = Path(db_path or os.environ.get("AGY_DEVICE_GATEWAY_DB", "/var/lib/gumacu-agy-devices/broker.sqlite"))
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+        try:
+            with conn:
+                row = conn.execute("SELECT device FROM affinity WHERE session=?", (session_id,)).fetchone()
+                if row:
+                    return str(row[0])
+                meta = conn.execute("SELECT device FROM session_metadata WHERE session_id=?", (session_id,)).fetchone()
+                if meta:
+                    return str(meta[0])
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.error("Failed to query affinity for session %s: %s", session_id, exc)
+    return None
+
+
+def load_remote_devices(db_path: Path | str | None = None, config_path: Path | str | None = None) -> list[dict[str, Any]]:
+    # Try gateway call first
+    try:
+        from agy_mcp.device_tools import gateway_call
+        res = gateway_call("/v1/admin/devices")
+        if res.get("success") and isinstance(res.get("devices"), list):
+            return res["devices"]
+    except Exception:
+        pass
+
+    path = Path(db_path or os.environ.get("AGY_DEVICE_GATEWAY_DB", "/var/lib/gumacu-agy-devices/broker.sqlite"))
+    cfg = Path(config_path or os.environ.get("AGY_DEVICE_CONFIG_PATH", "/etc/gumacu-agy-devices/devices.json"))
+    devices_info: dict[str, dict[str, Any]] = {}
+    if cfg.is_file():
+        try:
+            devices_info = load_devices(cfg)
+        except Exception as exc:
+            logger.error("Failed to load devices config from %s: %s", cfg, exc)
+
+    presence: dict[str, dict[str, Any]] = {}
+    if path.is_file():
+        try:
+            conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                with conn:
+                    table_check = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='presence';").fetchone()
+                    if table_check:
+                        for row in conn.execute("SELECT device, seen, capabilities FROM presence").fetchall():
+                            caps = {}
+                            try:
+                                caps = json.loads(row["capabilities"])
+                            except Exception:
+                                pass
+                            presence[row["device"]] = {
+                                "seen": row["seen"],
+                                "capabilities": caps,
+                            }
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error("Failed to read presence from %s: %s", path, exc)
+
+    now = time.time()
+    all_names = sorted(set(devices_info.keys()) | set(presence.keys()))
+    results: list[dict[str, Any]] = []
+    for name in all_names:
+        dev_cfg = devices_info.get(name, {})
+        pres = presence.get(name)
+        seen_ts = pres["seen"] if pres else None
+        online = bool(pres and (now - seen_ts < 35.0))
+        caps = pres["capabilities"] if pres else {}
+        results.append({
+            "id": name,
+            "os": dev_cfg.get("os") or caps.get("platform") or "unknown",
+            "online": online,
+            "last_seen": seen_ts,
+            "capabilities": caps,
+        })
+    return results
 
 
 def main() -> None:
