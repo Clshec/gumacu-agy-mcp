@@ -20,15 +20,16 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 
 @pytest.fixture(autouse=True)
-def isolate_bridge_host_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def isolate_bridge_host_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Keep Netcup's live bridge configuration out of unit tests.
 
     Tests that intentionally exercise a profile or feature may set its
     variables with monkeypatch after this autouse fixture has run.
     """
     for key in tuple(os.environ):
-        if key.startswith(("GUMACU_", "AGY_MCP_")):
+        if key.startswith(("GUMACU_", "AGY_MCP_", "AGY_DEVICE_")):
             monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AGY_DEVICE_GATEWAY_DB", str(tmp_path / "isolated-broker.sqlite"))
 
 
 @pytest.fixture
