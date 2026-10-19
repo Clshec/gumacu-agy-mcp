@@ -356,7 +356,12 @@ def _build_request(payload: dict[str, Any]) -> BridgeRequest:
     catches it and converts to a structured failure envelope.
     """
 
-    return BridgeRequest(**restrict_request(payload))
+    normalized = restrict_request(payload)
+    # Gumacu interactive operations never end a user job due to elapsed
+    # wall-clock time. This includes callers that accidentally pass 240/900.
+    # Networking/probe timeouts remain bounded separately.
+    normalized["timeout"] = 0
+    return BridgeRequest(**normalized)
 
 
 def _structured_failure(safety: SafetyPolicy, exc: BaseException, *, cwd: str = "") -> BridgeResponse:
