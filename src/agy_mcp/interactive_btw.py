@@ -237,3 +237,67 @@ def interactive_snapshot(job_id: str, clear_btw_pending: bool = False) -> dict[s
                     "note": "Terminal screenshot text is not a structured native answer. One side query at a time."}
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
         return _reply(exc)
+
+
+def _only_active_tui() -> str:
+    """Select only when exactly one live registered TUI exists."""
+    if not _enabled():
+        raise ValueError("native_btw_disabled")
+    active: list[str] = []
+    for path in _state_dir().glob("job_tui_*.json"):
+        try:
+            obj = _load(path.stem)
+            if _alive(obj):
+                active.append(path.stem)
+        except (ValueError, OSError, RuntimeError):
+            continue
+    if not active:
+        raise ValueError("no_registered_native_tui; headless agy --print jobs cannot use /btw")
+    if len(active) > 1:
+        raise ValueError("multiple_native_tui_sessions; supply job_tui_... explicitly")
+    return active[0]
+
+
+def route_legacy_command(
+    prompt: str,
+    *,
+    cwd: str = ".",
+    operator_token: str | None = None,
+) -> dict[str, Any] | None:
+    """Route fixed Gumacu slash commands via the *existing* MCP agy tool.
+
+    This preserves ChatGPT's cached agy tool schema. Unlike agy_continue,
+    it never resumes a --print conversation or sends a second print turn.
+    """
+    if not isinstance(prompt, str):
+        return None
+    verb, _, remainder = prompt.partition(" ")
+    if verb not in {"/tui-open", "/tui-send", "/tui-snapshot", "/btw"}:
+        return None
+    try:
+        if verb == "/tui-open":
+            if remainder.strip():
+                raise ValueError("use the existing agy.cd parameter to specify workspace")
+            return interactive_open(cwd=cwd, operator_token=operator_token)
+        if verb == "/tui-send":
+            job_id, sep, task = remainder.strip().partition(" ")
+            if not sep or not _JOB_ID.fullmatch(job_id):
+                raise ValueError("usage: /tui-send job_tui_<id> <primary task>")
+            return interactive_send(job_id, task)
+        if verb == "/tui-snapshot":
+            parts = remainder.strip().split()
+            if not parts or len(parts) > 2 or not _JOB_ID.fullmatch(parts[0]):
+                raise ValueError("usage: /tui-snapshot job_tui_<id> [--ack]")
+            if len(parts) == 2 and parts[1] != "--ack":
+                raise ValueError("only --ack may follow job id")
+            return interactive_snapshot(parts[0], clear_btw_pending="--ack" in parts)
+        # '/btw job_tui_<id> question' or '/btw question' when exactly one TUI.
+        first, sep, trailing = remainder.strip().partition(" ")
+        if _JOB_ID.fullmatch(first):
+            if not sep:
+                raise ValueError("usage: /btw job_tui_<id> <question>")
+            return interactive_btw(first, trailing)
+        job_id = _only_active_tui()
+        return interactive_btw(job_id, remainder.strip())
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _reply(exc)
