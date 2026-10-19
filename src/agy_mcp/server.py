@@ -56,6 +56,7 @@ from agy_mcp.events import (
     setup_events_protocol,
 )
 from agy_mcp.install import SkillScope, SkillTarget, install_skills
+from agy_mcp.interactive_operations import InteractiveOperations
 from agy_mcp.models import (
     ActiveJobsToolResponse,
     BackendName,
@@ -1665,6 +1666,65 @@ def agy_pipeline_cancel(pipeline_id: str) -> dict[str, Any]:
     }
 
 
+# ChatGPT-led operations: all state transitions are durable; the ChatGPT
+# caller still selects, verifies, and reviews EVERY short step. These backend
+# actions use the already-registered agy_dispatch schema.
+def _interactive_manager() -> InteractiveOperations:
+    _config_, _safety_, store, _supervisor_ = _ensure_state()
+    return InteractiveOperations(store.root)
+
+
+def operation_create(title: str) -> dict[str, Any]:
+    return _interactive_manager().create(title)
+
+
+def operation_step(
+    operation_id: str, request_id: str, label: str, prompt: str,
+    cd: str = ".", mode: Mode = "ask", allow_write: bool = False,
+    worktree: bool | None = None, operator_token: str | None = None,
+) -> dict[str, Any]:
+    manager = _interactive_manager()
+
+    def launch() -> BridgeResponse:
+        # BridgeRequest/SafetyPolicy/remote profile checks all remain
+        # centralized in agy_start. No extra_env or arbitrary command channel.
+        return agy_start_tool(
+            PROMPT=prompt, cd=cd, mode=mode, allow_write=allow_write,
+            worktree=worktree, operator_token=operator_token,
+            backend="agy", timeout=0,
+        )
+
+    return manager.begin(operation_id, request_id, label, prompt, launch)
+
+
+def operation_collect(operation_id: str) -> dict[str, Any]:
+    manager = _interactive_manager()
+    _cfg, _safe, _store_, supervisor = _ensure_state()
+    return manager.collect(
+        operation_id,
+        supervisor.status,
+        lambda job_id: agy_result_tool(job_id=job_id),
+    )
+
+
+def operation_review(
+    operation_id: str, accepted: bool, evidence: str,
+) -> dict[str, Any]:
+    return _interactive_manager().review(operation_id, accepted, evidence)
+
+
+def operation_status(operation_id: str) -> dict[str, Any]:
+    return _interactive_manager().state(operation_id)
+
+
+def operation_list(limit: int = 20) -> dict[str, Any]:
+    return _interactive_manager().list(limit)
+
+
+def operation_finish(operation_id: str) -> dict[str, Any]:
+    return _interactive_manager().finish(operation_id)
+
+
 # Optional Windows/Linux multi-device layer. Legacy agy_* tools remain local.
 register_device_tools(mcp)
 
@@ -1680,6 +1740,13 @@ register_capability_tools(
         "cancel": agy_cancel_tool,
         "sessions": agy_sessions_tool,
         "doctor": lambda: asyncio.run(agy_doctor_tool()),
+        "operation_create": operation_create,
+        "operation_step": operation_step,
+        "operation_collect": operation_collect,
+        "operation_review": operation_review,
+        "operation_status": operation_status,
+        "operation_list": operation_list,
+        "operation_finish": operation_finish,
     },
 )
 
