@@ -142,8 +142,20 @@ def test_live_request_blocks_reload_until_result(monkeypatch, tmp_path):
         target=reload_guard.watch_revision,
         args=(child, tracker, stopped),
     )
+    # Wait for the watcher to capture its original revision before modifying
+    # the marker. Otherwise a scheduling race can make it start on "b".
+    baseline = threading.Event()
+    read_revision = reload_guard.source_revision
+
+    def observed_revision():
+        value = read_revision()
+        baseline.set()
+        return value
+
+    monkeypatch.setattr(reload_guard, "source_revision", observed_revision)
     try:
         watcher.start()
+        assert baseline.wait(2), "watcher failed to read the baseline revision"
         marker.write_text("b", encoding="utf-8")
         time.sleep(0.6)
         assert child.poll() is None
