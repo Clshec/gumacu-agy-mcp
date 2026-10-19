@@ -114,7 +114,11 @@ def can_recycle(child: subprocess.Popen[bytes], tracker: RequestTracker) -> bool
     """Call under tracker.lock to avoid racing a new incoming tool request."""
     if child.poll() is not None:
         return False
-    if tracker.pending or time.monotonic() - tracker.last_activity < 5.0:
+    try:
+        idle_for = max(0.1, float(os.environ.get("AGY_MCP_RELOAD_IDLE_SECONDS", "5")))
+    except ValueError:
+        idle_for = 5.0
+    if tracker.pending or time.monotonic() - tracker.last_activity < idle_for:
         return False
     if sys.platform != "linux":
         return False
