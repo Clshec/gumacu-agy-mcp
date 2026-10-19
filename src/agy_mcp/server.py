@@ -30,8 +30,8 @@ a ``/Users/<user>/`` path.
 from __future__ import annotations
 
 import asyncio
-import json
 import hashlib
+import json
 import re
 import threading
 import weakref
