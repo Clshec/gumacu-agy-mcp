@@ -106,3 +106,16 @@ def test_requires_operator_authorization_for_controlled_profile(monkeypatch, tmp
     r = btw.interactive_open(cwd=str(tmp_path))
     assert not r["success"]
     assert r["error"] == "operator_authorization_required"
+
+
+def test_capability_registry_advertises_native_btw_only_when_enabled(monkeypatch):
+    from agy_mcp import capability_gateway as gw
+
+    monkeypatch.setattr(gw, "gateway_call", lambda path: {"success": False})
+    monkeypatch.delenv("GUMACU_ENABLE_INTERACTIVE_BTW", raising=False)
+    first = gw.catalog()
+    assert "btw" not in first["devices"][0]["actions"]
+    monkeypatch.setenv("GUMACU_ENABLE_INTERACTIVE_BTW", "1")
+    monkeypatch.setattr(gw.shutil, "which", lambda name: "/usr/bin/" + name)
+    second = gw.catalog()
+    assert ("btw" in second["devices"][0]["actions"]) == (os.name == "posix")
