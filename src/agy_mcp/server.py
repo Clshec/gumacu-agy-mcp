@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import threading
 import weakref
@@ -56,6 +57,13 @@ from agy_mcp.events import (
     setup_events_protocol,
 )
 from agy_mcp.install import SkillScope, SkillTarget, install_skills
+from agy_mcp.interactive_btw import (
+    interactive_btw,
+    interactive_open,
+    interactive_send,
+    interactive_snapshot,
+    route_legacy_command,
+)
 from agy_mcp.models import (
     ActiveJobsToolResponse,
     BackendName,
@@ -596,6 +604,34 @@ async def agy_tool(
     # doesn't try to "fix" it back to a bare ``object``.
     config, safety, _store_, _supervisor_ = _ensure_state()
     effective_cwd = cwd if cwd is not None else cd
+    # Route opt-in native TUI commands without adding/changing MCP tool schemas.
+    if isinstance(PROMPT, str) and PROMPT.partition(" ")[0] in {
+        "/btw", "/tui-open", "/tui-send", "/tui-snapshot",
+    }:
+        if SESSION_ID is not None:
+            return _structured_failure(
+                safety, ValueError("TUI commands require job_tui_ ID, not SESSION_ID"),
+                cwd=effective_cwd,
+            )
+        if dry_run:
+            return _structured_failure(
+                safety, ValueError("TUI commands do not support dry_run"),
+                cwd=effective_cwd,
+            )
+        result = await anyio.to_thread.run_sync(
+            partial(
+                route_legacy_command, PROMPT, cwd=effective_cwd,
+                operator_token=operator_token,
+            )
+        )
+        if result is not None:
+            return BridgeResponse(
+                success=bool(result.get("success")),
+                status="completed" if result.get("success") else "failed",
+                agent_messages=json.dumps(result, ensure_ascii=False),
+                error=result.get("error"),
+                cwd=effective_cwd,
+            )
     if SESSION_ID is not None:
         err = _validate_session_id(safety, SESSION_ID)
         if err is not None:
@@ -1660,6 +1696,10 @@ register_capability_tools(
         "cancel": agy_cancel_tool,
         "sessions": agy_sessions_tool,
         "doctor": lambda: asyncio.run(agy_doctor_tool()),
+        "interactive_open": interactive_open,
+        "interactive_send": interactive_send,
+        "btw": interactive_btw,
+        "interactive_snapshot": interactive_snapshot,
     },
 )
 

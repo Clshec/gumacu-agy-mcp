@@ -8,7 +8,9 @@ call instead of generating an MCP tool for every new device/capability.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from functools import partial
 from typing import Any, Callable
 
@@ -18,18 +20,24 @@ from agy_mcp.device_tools import gateway_call, submit
 
 LOCAL_DEVICE_ID = "linux-netcup"
 ACTIONS = ("start", "status", "read", "result", "cancel", "sessions", "doctor")
+INTERACTIVE_ACTIONS = ("interactive_open", "interactive_send", "btw", "interactive_snapshot")
 _ACTION_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _MAX_ARGUMENT_BYTES = 256_000
 
 
 def catalog() -> dict[str, Any]:
     """Read the live registry; never cache availability or remote actions."""
+    opt_in = os.environ.get("GUMACU_ENABLE_INTERACTIVE_BTW") == "1"
+    available = opt_in and os.name == "posix" and bool(shutil.which("tmux")) and bool(
+        os.environ.get("AGY_BIN") or shutil.which("agy")
+    )
+    local_actions = list(ACTIONS) + (list(INTERACTIVE_ACTIONS) if available else [])
     devices = [{
         "id": LOCAL_DEVICE_ID,
         "os": "Linux",
         "online": True,
         "local": True,
-        "actions": list(ACTIONS),
+        "actions": local_actions,
     }]
     reply = gateway_call("/v1/admin/devices")
     if reply.get("success") and isinstance(reply.get("devices"), list):

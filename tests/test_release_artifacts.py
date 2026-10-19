@@ -406,6 +406,7 @@ def test_release_cli_preserves_required_skills_when_source_and_artifact_are_miss
         "agy_mcp/device_agent.py",
         "agy_mcp/device_gateway.py",
         "agy_mcp/capability_gateway.py",
+        "agy_mcp/interactive_btw.py",
         "agy_mcp/device_tools.py",
         "agy_mcp/events.py",
         "agy_mcp/notifications.py",
