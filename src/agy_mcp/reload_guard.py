@@ -74,10 +74,21 @@ def source_revision() -> str | None:
 
 
 def _child_has_descendants(pid: int) -> bool:
-    """Fail closed on platforms where we cannot inspect process descendants."""
-    children = Path(f"/proc/{pid}/task/{pid}/children")
+    """Inspect children of ALL threads, not only the leader's task.
+
+    Python worker threads can spawn subprocesses attached to a non-leader
+    thread, so checking only /proc/<pid>/task/<pid>/children could miss an
+    active Antigravity child. Fail closed if /proc cannot be inspected.
+    """
+    tasks = Path(f"/proc/{pid}/task")
     try:
-        return bool(children.read_text(encoding="ascii").strip())
+        threads = list(tasks.iterdir())
+        if not threads:
+            return True
+        return any(
+            bool((thread / "children").read_text(encoding="ascii").strip())
+            for thread in threads
+        )
     except OSError:
         return True
 
