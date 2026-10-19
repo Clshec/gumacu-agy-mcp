@@ -164,10 +164,15 @@ class InteractiveOperations:
             if previous is not None:
                 if previous["prompt_hash"] != digest:
                     return {"success": False, "error": "idempotency_key_conflict"}
+                admitted = previous["job_id"] is not None
                 return {
-                    "success": True, "reused": True, "job_id": previous["job_id"],
+                    "success": admitted, "reused": True,
+                    "job_id": previous["job_id"],
                     "step_status": previous["status"], "operation_id": operation_id,
-                    "next_action": "operation_collect",
+                    "next_action": (
+                        "operation_collect" if admitted
+                        else "retry_with_a_new_request_id"
+                    ),
                 }
             if op["status"] != "ready":
                 return {
