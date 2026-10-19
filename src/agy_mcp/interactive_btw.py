@@ -8,7 +8,10 @@ Terminal content is a *screen snapshot*, not an authenticated answer payload.
 
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows agent imports this module but cannot run POSIX TUI.
+    fcntl = None  # type: ignore[assignment]
 import json
 import os
 import re
