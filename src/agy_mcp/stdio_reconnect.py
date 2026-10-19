@@ -11,6 +11,8 @@ import subprocess
 import sys
 import threading
 
+from agy_mcp.reload_guard import RequestTracker, watch_revision
+
 
 def send(pipe, message):
     pipe.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
@@ -18,6 +20,8 @@ def send(pipe, message):
 
 
 def main():
+    tracker = RequestTracker()
+    stop = threading.Event()
     child = subprocess.Popen(
         [sys.executable, "-m", "agy_mcp.cli"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
@@ -44,12 +48,17 @@ def main():
                 raise RuntimeError("MCP initialization failed")
             send(child.stdin, {"jsonrpc": "2.0", "method": "notifications/initialized"})
             print("gumacu reconnect: fresh MCP child initialized before resumed request", file=sys.stderr)
+        tracker.request(first)
         child.stdin.write(first)
         child.stdin.flush()
+        threading.Thread(
+            target=watch_revision, args=(child, tracker, stop), daemon=True,
+        ).start()
 
         def upstream():
             try:
                 for line in sys.stdin.buffer:
+                    tracker.request(line)
                     child.stdin.write(line)
                     child.stdin.flush()
             except (BrokenPipeError, OSError):
@@ -59,10 +68,12 @@ def main():
 
         threading.Thread(target=upstream, daemon=True).start()
         for line in child.stdout:
+            tracker.response(line)
             sys.stdout.buffer.write(line)
             sys.stdout.buffer.flush()
         return child.wait()
     finally:
+        stop.set()
         if child.poll() is None:
             child.terminate()
             try:
