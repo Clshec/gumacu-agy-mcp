@@ -131,3 +131,26 @@ with a disposable live session: open TUI, inspect readiness, send a harmless
 long-running primary prompt, inject /btw while it runs, see the side card,
 and confirm the primary agent finishes normally. Avoid activation until
 those observations are confirmed.
+
+
+### Using the existing ChatGPT agy tool (no tool refresh required)
+
+The same opt-in operations are accessible via the already-established
+`agy(PROMPT=...)` MCP tool, without installing/registering more MCP tools:
+
+- `/tui-open` — create a durable interactive TUI (the normal `cd` parameter
+  chooses the allowed workspace and the usual `operator_token` is checked)
+- `/tui-send job_tui_<id> <primary task>`
+- `/btw job_tui_<id> <side question>` — submit native `/btw` to that TUI
+- `/btw <side question>` — only if exactly one registered native TUI is active
+- `/tui-snapshot job_tui_<id>` — read visible TUI output
+- `/tui-snapshot job_tui_<id> --ack` — explicitly clear the one-question
+  acknowledgement lock after seeing the side question card
+
+The `agy` response's `agent_messages` contains a JSON result envelope.
+A completed MCP tool request here means only that **submission** completed,
+not that the side answer was already generated. Never treat it as a final
+answer unless the TUI screen actually displays the side-question card.
+
+`/btw` cannot attach to `agy_start` jobs running with `--print`; attempting
+to use a headless job ID returns an error rather than launching another turn.
