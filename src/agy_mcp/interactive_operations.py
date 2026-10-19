@@ -12,9 +12,10 @@ import os
 import re
 import secrets
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 _ID = re.compile(r"^op_[0-9a-f]{32}$")
 _TOKEN = re.compile(r"^[a-zA-Z0-9_-]{8,100}$")
@@ -32,8 +33,10 @@ def _now() -> str:
 def _text(value: str, name: str, limit: int) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise ValueError(f"{name} must be 1..{limit} characters")
-    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+    if any(ord(c) == 0 or ord(c) == 127 for c in value):
         raise ValueError(f"{name} contains control characters")
+    if name in {"title", "label"} and any(ord(c) < 32 for c in value):
+        raise ValueError(f"{name} must be a single line")
     return value.strip()
 
 
@@ -66,12 +69,23 @@ class InteractiveOperations:
                 );
             """)
 
-    def _db(self) -> sqlite3.Connection:
+    @contextmanager
+    def _db(self) -> Iterator[sqlite3.Connection]:
         db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA foreign_keys=ON")
-        db.execute("PRAGMA busy_timeout=10000")
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA foreign_keys=ON")
+            db.execute("PRAGMA busy_timeout=10000")
+            try:
+                yield db
+                if db.in_transaction:
+                    db.commit()
+            except Exception:
+                if db.in_transaction:
+                    db.rollback()
+                raise
+        finally:
+            db.close()
 
     @staticmethod
     def _op_id(operation_id: str) -> str:
