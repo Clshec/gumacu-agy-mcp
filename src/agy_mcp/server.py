@@ -47,6 +47,12 @@ from agy_mcp.adapters.gemini import GeminiCliBackend
 from agy_mcp.adapters.protocol import ProtocolTranslator
 from agy_mcp.bridge import _run as _bridge_run
 from agy_mcp.capability_gateway import register_capability_tools
+from agy_mcp.interactive_btw import (
+    interactive_btw,
+    interactive_open,
+    interactive_send,
+    interactive_snapshot,
+)
 from agy_mcp.config import Config, get_config
 from agy_mcp.device_tools import register_device_tools
 from agy_mcp.doctor import run_doctor
@@ -1660,6 +1666,10 @@ register_capability_tools(
         "cancel": agy_cancel_tool,
         "sessions": agy_sessions_tool,
         "doctor": lambda: asyncio.run(agy_doctor_tool()),
+        "interactive_open": interactive_open,
+        "interactive_send": interactive_send,
+        "btw": interactive_btw,
+        "interactive_snapshot": interactive_snapshot,
     },
 )
 
