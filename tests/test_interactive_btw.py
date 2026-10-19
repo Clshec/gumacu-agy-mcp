@@ -119,3 +119,34 @@ def test_capability_registry_advertises_native_btw_only_when_enabled(monkeypatch
     monkeypatch.setattr(gw.shutil, "which", lambda name: "/usr/bin/" + name)
     second = gw.catalog()
     assert ("btw" in second["devices"][0]["actions"]) == (os.name == "posix")
+
+
+def test_existing_agy_command_parser_routes_native_btw_without_second_print(monkeypatch):
+    job = "job_tui_" + "a" * 32
+    messages = []
+    monkeypatch.setattr(
+        btw, "interactive_btw",
+        lambda job_id, question: messages.append((job_id, question))
+        or {"success": True, "status": "native_btw_submitted"},
+    )
+    direct = btw.route_legacy_command(f"/btw {job} Where are we?")
+    assert direct["success"]
+    assert messages == [(job, "Where are we?")]
+    monkeypatch.setattr(btw, "_only_active_tui", lambda: job)
+    shorthand = btw.route_legacy_command("/btw Is it almost done?")
+    assert shorthand["success"]
+    assert messages[-1] == (job, "Is it almost done?")
+    assert btw.route_legacy_command("Normal user question") is None
+
+
+def test_existing_agy_command_parser_opens_only_with_operator_check(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        btw, "interactive_open",
+        lambda cwd, operator_token: calls.append((cwd, operator_token))
+        or {"success": False, "error": "operator_authorization_required"},
+    )
+    result = btw.route_legacy_command("/tui-open", cwd="/work", operator_token=None)
+    assert not result["success"]
+    assert calls == [("/work", None)]
+    assert "usage" in btw.route_legacy_command("/tui-send")["error"].lower()
