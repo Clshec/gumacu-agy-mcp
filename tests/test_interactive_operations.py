@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 from agy_mcp.interactive_operations import InteractiveOperations
@@ -44,7 +45,7 @@ def test_chatgpt_leads_each_step_and_review_is_a_hard_gate(tmp_path):
     assert second["success"] and second["step_number"] == 2
 
     # Preserve only hashed evidence and prompt digests, not secret-bearing text.
-    with sqlite3.connect(manager.path) as db:
+    with closing(sqlite3.connect(manager.path)) as db:
         stored = "\n".join(str(v) for row in db.execute("SELECT * FROM steps") for v in row)
     assert "kubectl inspection" not in stored
     assert "Inspect Odoo" not in stored
