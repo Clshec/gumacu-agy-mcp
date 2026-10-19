@@ -88,7 +88,9 @@ def test_state_survives_client_restart_and_duplicate_step_is_not_reexecuted(tmp_
     before = InteractiveOperations(tmp_path)
     op = before.create("Restore cluster carefully")["operation_id"]
     observed = []
-    task = lambda: (observed.append(1) or _reply(success=True, job_id="job_original", error=None))
+    def task():
+        observed.append(1)
+        return _reply(success=True, job_id="job_original", error=None)
     before.begin(op, "unique_key_2026", "Examine", "Check nodes", task)
     after = InteractiveOperations(tmp_path)
     retry = after.begin(op, "unique_key_2026", "Examine", "Check nodes", task)
