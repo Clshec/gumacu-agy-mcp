@@ -733,8 +733,8 @@ async def agy_continue_tool(
 @mcp.tool(
     name="agy_start",
     description=(
-        "Start an unlimited-duration, monitorable Antigravity job. Up to eight " 
-        "supervised jobs run concurrently per Supervisor; accepted jobs are " 
+        "Start an unlimited-duration, monitorable Antigravity job. Up to eight "
+        "supervised jobs run concurrently per Supervisor; accepted jobs are "
         "not cancelled to admit new ones. REQUIRED for "
         "tasks that may take more than a few seconds, when the user may ask "
         "what is happening, or when an automatic completion/failure event is "
