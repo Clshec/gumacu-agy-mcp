@@ -37,7 +37,7 @@ def test_native_same_tui_one_in_flight_and_no_print(monkeypatch, tmp_path):
     def fake_tmux(*args):
         commands.append(args)
         return "side question card"
-    
+
     monkeypatch.setattr(btw, "_tmux", fake_tmux)
     opened = btw.interactive_open(cwd=str(tmp_path))
     assert opened["success"]
