@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -64,7 +62,7 @@ def test_running_supervisor_job_is_a_reload_blocker(monkeypatch, tmp_path):
             session_store_root=lambda: tmp_path
         ),
     )
-    folder = tmp_path / "job_somevalid" 
+    folder = tmp_path / "job_somevalid"
     folder.mkdir()
     payload = {
         "status": "running",
