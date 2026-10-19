@@ -17,7 +17,10 @@ import anyio
 from agy_mcp.device_tools import gateway_call, submit
 
 LOCAL_DEVICE_ID = "linux-netcup"
-ACTIONS = ("start", "status", "read", "result", "cancel", "sessions", "doctor")
+ACTIONS = ("start", "status", "read", "result", "cancel", "sessions", "doctor",
+           "operation_create", "operation_step", "operation_collect",
+           "operation_review", "operation_status", "operation_list",
+           "operation_finish")
 _ACTION_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _MAX_ARGUMENT_BYTES = 256_000
 
