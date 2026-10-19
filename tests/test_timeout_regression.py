@@ -94,7 +94,7 @@ def test_device_agent_start_timeout(monkeypatch):
     assert captured_args["timeout"] == 0
 
 
-def test_agy_start_tool_accepts_21600(monkeypatch, tmp_path: Path):
+def test_agy_start_tool_accepts_but_ignores_21600_deadline(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("GUMACU_REMOTE_PROFILE", "operator")
     monkeypatch.setenv("GUMACU_ALLOWED_WORKSPACE", str(tmp_path))
 
@@ -111,14 +111,14 @@ def test_agy_start_tool_accepts_21600(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(server, "_ensure_state", lambda: (MagicMock(), mock_safety, MagicMock(), mock_supervisor))
 
-    # agy_start_tool with timeout=21600 MUST NOT fail with "remote timeout must be 1..1200 seconds"
+    # Caller-supplied timeout=21600 must not impose a Gumacu MCP task deadline.
     resp = server.agy_start_tool(PROMPT="test 21600", cd=str(tmp_path), timeout=21600)
     assert resp.success is True
     assert resp.job_id == "job_test_21600"
 
     call_req = mock_supervisor.start.call_args[0][0]
     assert isinstance(call_req, BridgeRequest)
-    assert call_req.timeout == 21600
+    assert call_req.timeout == 0
 
 def test_agy_print_command_without_implicit_timeout(monkeypatch):
     from agy_mcp.adapters.agy import AgyPrintBackend

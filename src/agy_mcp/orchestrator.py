@@ -38,7 +38,7 @@ class StepDefinition(BaseModel):
     mode: str = "ask"
     cwd: str = "."
     session_id: str | None = None
-    timeout: int = 900
+    timeout: int = 0
     backend: str = "auto"
     sandbox: bool = False
     allow_write: bool = False
@@ -55,7 +55,7 @@ class StepExecution(BaseModel):
     mode: str = "ask"
     cwd: str = "."
     session_id: str | None = None
-    timeout: int = 900
+    timeout: int = 0
     backend: str = "auto"
     sandbox: bool = False
     allow_write: bool = False
@@ -171,7 +171,7 @@ class Orchestrator:
                 mode = raw_mode if raw_mode in {"ask", "plan", "prototype", "review", "execute", "browser", "long"} else "ask"
                 cwd = str(s.get("cwd") or ".")
                 step_session = s.get("session_id")
-                timeout = int(s.get("timeout") or 900)
+                timeout = 0  # Gumacu operations never impose a task wall-clock deadline.
                 backend = str(s.get("backend") or "auto")
                 sandbox = bool(s.get("sandbox", False))
                 allow_write = bool(s.get("allow_write", False))
@@ -184,7 +184,7 @@ class Orchestrator:
                 mode = raw_mode if raw_mode in {"ask", "plan", "prototype", "review", "execute", "browser", "long"} else "ask"
                 cwd = str(s.cwd or ".")
                 step_session = s.session_id
-                timeout = int(s.timeout or 900)
+                timeout = 0  # Even persisted legacy step timeouts are not enforced.
                 backend = s.backend
                 sandbox = s.sandbox
                 allow_write = s.allow_write
@@ -301,7 +301,7 @@ class Orchestrator:
                     session_id=effective_session,
                     mode=safe_mode,
                     cwd=step.cwd or ".",
-                    timeout=step.timeout or 900,
+                    timeout=0,  # Unlimited; no implicit legacy 900s fallback.
                     backend=step.backend,
                     sandbox=step.sandbox,
                     allow_write=step.allow_write,
@@ -311,8 +311,19 @@ class Orchestrator:
 
                 try:
                     response = self.supervisor.start(req)
-                    if not response.success or not response.job_id:
+                    if not response.success:
+                        if (response.error or "").startswith("supervisor busy:"):
+                            # The supervisor runs at most eight jobs concurrently.
+                            # Keep this step pending in durable state and retry on
+                            # the next tick; never cancel or fail a queued pipeline.
+                            logger.info(
+                                "Pipeline %s step %s waiting for a free execution slot",
+                                pipe.pipeline_id, step.step_id,
+                            )
+                            return
                         raise RuntimeError(response.error or "Supervisor did not start the job")
+                    if not response.job_id:
+                        raise RuntimeError("Supervisor did not return a job ID")
                     step.job_id = response.job_id
                     step.status = "running"
                     step.started_at = utc_now_iso()
@@ -391,41 +402,10 @@ class Orchestrator:
                         pipe.finished_at = utc_now_iso()
                         logger.info("Pipeline %s fully completed", pipe.pipeline_id)
                     else:
-                        # Immediately start the next pending step without waiting for next tick
-                        next_step = pipe.steps[pipe.current_step_index]
-                        if next_step.status == "pending":
-                            eff_session = next_step.session_id or pipe.session_id
-                            safe_mode = next_step.mode if next_step.mode in {"ask", "plan", "prototype", "review", "execute", "browser", "long"} else "ask"
-                            next_req = BridgeRequest(
-                                prompt=next_step.prompt,
-                                session_id=eff_session,
-                                mode=safe_mode,
-                                cwd=next_step.cwd or ".",
-                                timeout=next_step.timeout or 900,
-                                backend=next_step.backend,
-                                sandbox=next_step.sandbox,
-                                allow_write=next_step.allow_write,
-                                worktree=next_step.worktree,
-                                output_protocol=next_step.output_protocol,
-                            )
-                            try:
-                                nresp = self.supervisor.start(next_req)
-                                if not nresp.success or not nresp.job_id:
-                                    raise RuntimeError(
-                                        nresp.error or "Supervisor did not start the job"
-                                    )
-                                next_step.job_id = nresp.job_id
-                                next_step.status = "running"
-                                next_step.started_at = utc_now_iso()
-                                if not pipe.session_id and nresp.SESSION_ID:
-                                    pipe.session_id = nresp.SESSION_ID
-                                if not next_step.session_id and nresp.SESSION_ID:
-                                    next_step.session_id = nresp.SESSION_ID
-                            except Exception as nexc:
-                                next_step.status = "failed"
-                                next_step.error = str(nexc)
-                                pipe.status = "failed"
-                                pipe.error = f"Step {next_step.step_id} failed to launch: {nexc}"
+                        # A pending step is retried by the durable worker loop.
+                        # Do not fail the whole pipeline just because all eight
+                        # execution slots are currently busy.
+                        logger.debug("Pipeline %s has another pending step", pipe.pipeline_id)
 
                     self._save_state()
                     self.wake()

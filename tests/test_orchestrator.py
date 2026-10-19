@@ -127,10 +127,15 @@ def test_orchestrator_step_chaining_success(tmp_path: Path):
     pipe = orchestrator.get_pipeline(pipe.pipeline_id)
     assert pipe.steps[0].status == "completed"
     assert pipe.current_step_index == 1
+    assert pipe.steps[1].status == "pending"
+    assert pipe.steps[1].job_id is None
+
+    # Tick 4: Start step 2 after persisting the completed first step.
+    orchestrator._tick()
     assert pipe.steps[1].status == "running"
     assert pipe.steps[1].job_id == "job_step_2"
 
-    # Tick 4: Step 2 completed -> Pipeline fully completed
+    # Tick 5: Step 2 completed -> Pipeline fully completed
     mock_supervisor.status.return_value = JobRecord(
         job_id="job_step_2",
         status="completed",
@@ -314,3 +319,82 @@ def test_server_pipeline_tools(tmp_path: Path):
     assert res_cancel["status"] == "cancelled"
 
     _reset_state_for_tests()
+
+
+def test_eight_concurrent_pipelines_and_ninth_waits_in_durable_queue(tmp_path: Path):
+    """A busy supervisor never stops the first eight jobs or fails the ninth."""
+    store = SessionStore(tmp_path / "sessions")
+    supervisor = _mock_supervisor()
+    state = tmp_path / "queue.json"
+    scheduler = Orchestrator(
+        store=store, supervisor=supervisor, state_path=state,
+        auto_start_worker=False,
+    )
+    pipes = [
+        scheduler.create_pipeline(
+            name=f"Independent job {i}", steps=[{"prompt": f"job {i}"}],
+            auto_start=True,
+        )
+        for i in range(9)
+    ]
+    supervisor.start.side_effect = [
+        *[_started(f"job_active_{i}") for i in range(8)],
+        BridgeResponse(success=False, error="supervisor busy: 8 concurrent jobs already running"),
+    ]
+    scheduler._tick()
+    for pipe in pipes[:8]:
+        assert pipe.status == "running"
+        assert pipe.steps[0].status == "running"
+    assert pipes[8].status == "running"
+    assert pipes[8].steps[0].status == "pending"
+    assert pipes[8].steps[0].job_id is None
+
+    # The queue survives a new controller instance / ChatGPT conversation.
+    reloaded = Orchestrator(
+        store=store, supervisor=supervisor, state_path=state,
+        auto_start_worker=False,
+    )
+    ninth = reloaded.get_pipeline(pipes[8].pipeline_id)
+    assert ninth is not None and ninth.steps[0].status == "pending"
+    supervisor.status.return_value = JobRecord(
+        job_id="job_unchanged", status="running", cwd="/work", request={},
+    )
+    supervisor.start.side_effect = None
+    supervisor.start.return_value = _started("job_queued_9")
+    reloaded._tick()
+    assert ninth.steps[0].status == "running"
+    assert ninth.steps[0].job_id == "job_queued_9"
+    assert all(p.steps[0].status == "running" for p in reloaded.list_pipelines(limit=20))
+
+
+def test_pipeline_timeout_is_always_unlimited_for_new_and_old_step_records(tmp_path: Path):
+    from agy_mcp.orchestrator import StepDefinition
+
+    store = SessionStore(tmp_path / "sessions")
+    supervisor = _mock_supervisor()
+    scheduler = Orchestrator(
+        store=store, supervisor=supervisor,
+        state_path=tmp_path / "state.json", auto_start_worker=False,
+    )
+    assert StepDefinition(step_id="one", prompt="work").timeout == 0
+    pipeline = scheduler.create_pipeline(
+        name="No task deadlines",
+        steps=[{"prompt": "first", "timeout": 240},
+               StepDefinition(step_id="second", prompt="second", timeout=900)],
+        auto_start=True,
+    )
+    assert [step.timeout for step in pipeline.steps] == [0, 0]
+    # A legacy pipeline loaded from disk may still carry timeout=900, but it
+    # MUST NOT reach agy --print-timeout.
+    pipeline.steps[0].timeout = 900
+    supervisor.start.return_value = _started("job_no_timeout")
+    scheduler._tick()
+    assert supervisor.start.call_args.args[0].timeout == 0
+
+    supervisor.status.return_value = JobRecord(
+        job_id="job_no_timeout", status="completed", cwd="/work", request={},
+    )
+    scheduler._tick()  # complete first, keep next queued
+    supervisor.start.return_value = _started("job_no_timeout_second")
+    scheduler._tick()
+    assert supervisor.start.call_args.args[0].timeout == 0

@@ -306,6 +306,12 @@ try:
         version=__version__,
         instructions=(
             "Google Antigravity (agy) CLI bridge with long-task supervisor. "
+            "DEFAULT POLICY: Gumacu Interactive Operations. ChatGPT coordinates "
+            "small verified steps, inspects execution results, and decides the "
+            "next step; do not delegate huge unattended tasks by default. "
+            "Up to eight supervised jobs may run concurrently. Never stop one "
+            "job merely to start another and never impose a task time limit. "
+            "Persisted pipelines keep excess steps pending for later capacity. "
             "IMPORTANT: use ``agy_start`` for every task that may take more than a "
             "few seconds, or whenever the user may wait, monitor, ask for progress, "
             "or expect an automatic completion event. A synchronous ``agy`` call "
@@ -325,6 +331,12 @@ except TypeError:
         name="agy-mcp",
         instructions=(
             "Google Antigravity (agy) CLI bridge with long-task supervisor. "
+            "DEFAULT POLICY: Gumacu Interactive Operations. ChatGPT coordinates "
+            "small verified steps, inspects execution results, and decides the "
+            "next step; do not delegate huge unattended tasks by default. "
+            "Up to eight supervised jobs may run concurrently. Never stop one "
+            "job merely to start another and never impose a task time limit. "
+            "Persisted pipelines keep excess steps pending for later capacity. "
             "IMPORTANT: use ``agy_start`` for every task that may take more than a "
             "few seconds, or whenever the user may wait, monitor, ask for progress, "
             "or expect an automatic completion event. A synchronous ``agy`` call "
@@ -356,7 +368,13 @@ def _build_request(payload: dict[str, Any]) -> BridgeRequest:
     catches it and converts to a structured failure envelope.
     """
 
-    return BridgeRequest(**restrict_request(payload))
+    # Validate the original request first so negative, oversized or malformed
+    # timeout values still fail as they did before this policy change.
+    validated = BridgeRequest(**restrict_request(payload))
+    # Gumacu interactive operations never end a user job due to elapsed
+    # wall-clock time. This includes callers that accidentally pass 240/900.
+    # Networking/probe timeouts remain bounded separately.
+    return validated.model_copy(update={"timeout": 0})
 
 
 def _structured_failure(safety: SafetyPolicy, exc: BaseException, *, cwd: str = "") -> BridgeResponse:
@@ -715,7 +733,9 @@ async def agy_continue_tool(
 @mcp.tool(
     name="agy_start",
     description=(
-        "Start a monitorable Antigravity job in the background. REQUIRED for "
+        "Start an unlimited-duration, monitorable Antigravity job. Up to eight "
+        "supervised jobs run concurrently per Supervisor; accepted jobs are "
+        "not cancelled to admit new ones. REQUIRED for "
         "tasks that may take more than a few seconds, when the user may ask "
         "what is happening, or when an automatic completion/failure event is "
         "expected. Returns status='running' and a job_id; use agy_status for a "
