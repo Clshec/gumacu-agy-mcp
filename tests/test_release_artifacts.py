@@ -403,6 +403,7 @@ def test_release_cli_preserves_required_skills_when_source_and_artifact_are_miss
     shutil.copyfile(_SCRIPT, script)
     package_members = (
         "agy_mcp/antigravity_metadata.py",
+        "agy_mcp/chatgpt_workspace.py",
         "agy_mcp/device_agent.py",
         "agy_mcp/device_gateway.py",
         "agy_mcp/capability_gateway.py",
@@ -454,6 +455,7 @@ def test_release_cli_preserves_required_skills_when_source_and_artifact_are_miss
         "CHANGELOG.md",
         "pyproject.toml",
         "docs/multi-device.md",
+        "docs/chatgpt_integration_matrix.md",
         "docs/architecture.md",
         "docs/cli-capabilities.md",
         "docs/comparison-with-cli-wrappers.md",

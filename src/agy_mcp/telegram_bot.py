@@ -664,6 +664,7 @@ class TelegramBot:
             "new": lambda: self._new(arg),
             "use": lambda: self._use(arg),
             "sessions": self._sessions,
+            "chatgpt": lambda: self._chatgpt_command(arg),
         }
         handler = handlers.get(command)
         if handler is None:
@@ -1178,7 +1179,7 @@ class TelegramBot:
         return refreshed
 
     def _help(self) -> None:
-        self.send("<b>أوامر Gumacu Antigravity</b>\n/devices قائمة الأجهزة\n/device windows-main أو linux-netcup — اختيار الجهاز\n/last آخر رد للجلسة المختارة\n/shutdown إغلاق الجهاز المختار بعد تأكيد\n/jobs المهام الجارية\n/status ملخص الجارية\n/status الاسم أو الرقم\n/progress الاسم أو الرقم\n/recent أحدث النتائج\n/new نص الرسالة — جلسة جديدة\n/use الاسم أو الرقم — اختيار جلسة\n/sessions تصفح المحادثات\nأي نص عادي — إرساله للجلسة المختارة", menu=True)
+        self.send("<b>أوامر Gumacu Antigravity</b>\n/devices قائمة الأجهزة\n/device windows-main أو linux-netcup — اختيار الجهاز\n/last آخر رد للجلسة المختارة\n/shutdown إغلاق الجهاز المختار بعد تأكيد\n/jobs المهام الجارية\n/status ملخص الجارية\n/status الاسم أو الرقم\n/progress الاسم أو الرقم\n/recent أحدث النتائج\n/new نص الرسالة — جلسة جديدة\n/use الاسم أو الرقم — اختيار جلسة\n/sessions تصفح المحادثات\n/chatgpt وكلاء مساحة عمل ChatGPT\nأي نص عادي — إرساله للجلسة المختارة", menu=True)
 
     def _sessions(self) -> None:
         self._session_browser(0)
@@ -1411,6 +1412,99 @@ class TelegramBot:
             f"المعرّف: <code>{response.job_id[-12:]}</code>\n"
             "سأرسل تحديثًا تلقائيًا كل بضع دقائق، ثم النتيجة النهائية."
         )
+
+    def _chatgpt_command(self, arg: str) -> None:
+        """Handle opt-in /chatgpt command for OpenAI Workspace Agents."""
+        from agy_mcp import chatgpt_workspace as cw
+
+        parts = arg.strip().split(maxsplit=2)
+        subcommand = parts[0].lower() if parts else "status"
+
+        if subcommand in {"status", "info"}:
+            cap = cw.get_capabilities()
+            configured = cap.get("configured", False)
+            status_icon = "🟢 متصل ومُهيأ" if configured else "⚪ غير مفعّل (Opt-in)"
+            agents_info = cw.list_agents()
+            agents_list = agents_info.get("agents", [])
+            lines = [
+                "<b>🤖 مكاملة ChatGPT Workspace Agents الرسمية</b>\n",
+                f"الحالة: {status_icon}",
+                f"المزود: <code>{cw.PROVIDER_ID}</code>",
+                "",
+                "ℹ️ <b>تنبيه هام حول محادثات ChatGPT الشخصية:</b>",
+                "لا توفر OpenAI أي واجهة برمجية رسمية (Official API) لقراءة أو استئناف المحادثات الشخصية السابقة في حساب ChatGPT.",
+                "هذا المكوّن يستخدم حصرياً الواجهة الرسمية لـ <b>OpenAI Workspace Agents API</b> لإطلاق وكلاء مساحة العمل ومتابعة حالتهم.",
+                "⚠️ لا يمكن استرجاع نصوص الإجابات عبر الـ API؛ يتم عرض المحادثة والنتائج عبر رابط <code>conversation_url</code> في ChatGPT مباشرة.",
+            ]
+            if configured and agents_list:
+                lines.append("\n<b>الوكلاء المسجلون (Agents):</b>")
+                for a in agents_list:
+                    lines.append(f"• <code>{html.escape(a['alias'])}</code> ({html.escape(a['agent_id'])})")
+            lines.extend([
+                "",
+                "<b>الاستخدام:</b>",
+                "• <code>/chatgpt status</code> لعرض الحالة",
+                "• <code>/chatgpt agents</code> لعرض الوكلاء المتاحين",
+                "• <code>/chatgpt trigger &lt;alias&gt; &lt;الطلب&gt;</code> لإطلاق وكيل",
+                "• <code>/chatgpt run &lt;run_id&gt; [alias]</code> للاستعلام عن حالة مهمة",
+            ])
+            self.send("\n".join(lines))
+        elif subcommand == "agents":
+            agents_info = cw.list_agents()
+            if not agents_info.get("configured"):
+                self.send("⚠️ مكاملة ChatGPT Workspace غير مهيأة. يلزم ضبط <code>CHATGPT_WORKSPACE_PAT</code> و <code>CHATGPT_WORKSPACE_AGENTS</code>.")
+                return
+            agents_list = agents_info.get("agents", [])
+            if not agents_list:
+                self.send("لا يوجد وكلاء مسجلون حالياً.")
+                return
+            lines = ["<b>🤖 وكلاء ChatGPT Workspace المسجلون:</b>\n"]
+            for a in agents_list:
+                lines.append(f"• <code>{html.escape(a['alias'])}</code> -> <code>{html.escape(a['agent_id'])}</code>")
+            self.send("\n".join(lines))
+        elif subcommand == "trigger":
+            if len(parts) < 3:
+                self.send("الاستخدام: <code>/chatgpt trigger &lt;اسم الوكيل&gt; &lt;الطلب&gt;</code>")
+                return
+            alias = parts[1]
+            prompt_text = parts[2]
+            res = cw.trigger_run(prompt_text, agent=alias)
+            if not res.get("success"):
+                self.send(f"❌ فشل إطلاق الوكيل:\n<code>{html.escape(str(res.get('error')))}</code>")
+                return
+            run_id = res.get("agent_trigger_run_id", "unknown")
+            url = res.get("conversation_url", "")
+            lines = [
+                "✅ <b>تم إطلاق ChatGPT Workspace Agent بنجاح</b>\n",
+                f"الوكيل: <code>{html.escape(alias)}</code>",
+                f"معرّف المهمة: <code>{html.escape(run_id)}</code>",
+                f"الحالة: <b>{html.escape(str(res.get('status', 'queued')))}</b>",
+            ]
+            if url:
+                lines.append(f"🔗 رابط المحادثة في ChatGPT:\n{html.escape(url)}")
+            lines.append("\n⚠️ نصوص الإجابات تعرض عبر واجهة ChatGPT ولا يتم سحبها عبر الـ API.")
+            self.send("\n".join(lines))
+        elif subcommand == "run":
+            if len(parts) < 2:
+                self.send("الاستخدام: <code>/chatgpt run &lt;run_id&gt; [alias]</code>")
+                return
+            run_id = parts[1]
+            alias = parts[2] if len(parts) > 2 else None
+            res = cw.get_run_status(run_id, agent=alias)
+            if not res.get("success"):
+                self.send(f"❌ فشل الاستعلام:\n<code>{html.escape(str(res.get('error')))}</code>")
+                return
+            lines = [
+                "<b>📊 حالة مهمة ChatGPT Workspace Agent:</b>\n",
+                f"معرّف المهمة: <code>{html.escape(run_id)}</code>",
+                f"الحالة: <b>{html.escape(str(res.get('status', 'unknown')))}</b>",
+            ]
+            url = res.get("conversation_url")
+            if url:
+                lines.append(f"🔗 رابط المحادثة: {html.escape(url)}")
+            self.send("\n".join(lines))
+        else:
+            self.send("أمر غير معروف لـ /chatgpt. استخدم <code>/chatgpt status</code>")
 
 
 def main() -> None:

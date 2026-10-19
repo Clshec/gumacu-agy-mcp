@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 import anyio
 
+from agy_mcp import chatgpt_workspace
 from agy_mcp.device_tools import gateway_call, submit
 
 LOCAL_DEVICE_ID = "linux-netcup"
@@ -57,6 +58,9 @@ def catalog() -> dict[str, Any]:
         "success": True,
         "schema_version": 1,
         "devices": devices,
+        "providers": [
+            chatgpt_workspace.descriptor(),
+        ],
         "gateway_available": bool(reply.get("success")),
         "notes": "Only allowlisted actions are executable; no raw shell/SSH dispatch.",
     }
@@ -122,6 +126,10 @@ def register_capability_tools(mcp: Any, local: dict[str, Callable[..., Any]]) ->
             return {"success": False, "error": "invalid action name"}
         try:
             args = _arguments(arguments)
+            if device_id == chatgpt_workspace.PROVIDER_ID:
+                return await anyio.to_thread.run_sync(
+                    partial(chatgpt_workspace.dispatch_action, action, args)
+                )
             if device_id == LOCAL_DEVICE_ID:
                 handler = local.get(action)
                 if handler is None:

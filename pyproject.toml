@@ -104,6 +104,7 @@ exclude = [
 include = [
     "src/agy_mcp",
     "docs/multi-device.md",
+    "docs/chatgpt_integration_matrix.md",
     "docs/architecture.md",
     "docs/cli-capabilities.md",
     "docs/comparison-with-cli-wrappers.md",

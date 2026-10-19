@@ -127,7 +127,9 @@ _REQUIRED_SDIST_BASE_FILES: set[str] = {
     "docs/release.md",
     "docs/security.md",
     "docs/multi-device.md",
+    "docs/chatgpt_integration_matrix.md",
     "src/agy_mcp/antigravity_metadata.py",
+    "src/agy_mcp/chatgpt_workspace.py",
     "src/agy_mcp/device_agent.py",
     "src/agy_mcp/device_gateway.py",
     "src/agy_mcp/capability_gateway.py",
@@ -182,6 +184,7 @@ ALLOWED_SDIST_FILES: set[str] = REQUIRED_SDIST_FILES | {
 # explicitly rather than trusting hatch to mirror the sdist whitelist.
 _REQUIRED_WHEEL_BASE_FILES: set[str] = {
     "agy_mcp/antigravity_metadata.py",
+    "agy_mcp/chatgpt_workspace.py",
     "agy_mcp/device_agent.py",
     "agy_mcp/device_gateway.py",
     "agy_mcp/capability_gateway.py",
