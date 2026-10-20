@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -53,7 +55,9 @@ def test_stable_catalog_and_integration_over_unix_socket(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     script.chmod(0o700)
-    sock = tmp_path / "ssh.sock"
+    # macOS AF_UNIX socket paths have a short limit; pytest tmp_path can exceed it.
+    short_dir = tempfile.TemporaryDirectory(prefix="gsm-")
+    sock = Path(short_dir.name) / "ssh.sock"
     monkeypatch.setenv("GUMACU_SSH_SOCKET", str(sock))
     monkeypatch.setenv("GUMACU_SSH_TARGET", "gumacu-netcup-local")
     monkeypatch.delenv("GUMACU_SSH_DENY_TOOLS", raising=False)
@@ -79,6 +83,7 @@ def test_stable_catalog_and_integration_over_unix_socket(monkeypatch, tmp_path):
         server.server_close()
         backend.close()
         thread.join(timeout=3)
+        short_dir.cleanup()
 
 
 def test_sidecar_uses_separate_stable_tools_without_registering_new_top_level_tools():
