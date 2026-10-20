@@ -100,12 +100,13 @@ def ssh_catalog() -> dict[str, Any]:
 
 
 def ssh_call(name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Call a named upstream SSH tool; never interpret text as Python/shell locally."""
-    try:
-        secured = _secure_arguments(name, arguments or {})
-    except ValueError as exc:
-        return {"success": False, "error": str(exc)}
-    return _call_socket({"kind": "call", "name": name, "arguments": secured})
+    """Forward untrusted arguments to the private sidecar for ONE policy check.
+
+    Validation and operator-only injected SSH flags occur only on the server:
+    validating/injecting here too caused a second pass to reject our own
+    strict_host_key_checking flag. The socket side is the security boundary.
+    """
+    return _call_socket({"kind": "call", "name": name, "arguments": arguments or {}})
 
 
 class StdioBackend:
