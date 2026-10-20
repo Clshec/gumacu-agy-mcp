@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import json
-import os
-import socket
+import asyncio
 import sys
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -89,7 +86,6 @@ def test_sidecar_uses_separate_stable_tools_without_registering_new_top_level_to
     assert "ssh_catalog" in ACTIONS
     assert "ssh_call" in ACTIONS
     from agy_mcp import server
-    import asyncio
     names = [x.name for x in asyncio.run(server.mcp.list_tools())]
     assert "agy_dispatch" in names
     assert "ssh_exec" not in names
