@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import sys
 import tempfile
 import threading
@@ -94,3 +95,38 @@ def test_sidecar_uses_separate_stable_tools_without_registering_new_top_level_to
     names = [x.name for x in asyncio.run(server.mcp.list_tools())]
     assert "agy_dispatch" in names
     assert "ssh_exec" not in names
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets")
+def test_restart_recovers_owned_stale_socket_but_does_not_replace_live_socket(monkeypatch):
+    """SIGKILL can leave a Unix socket path; restart must work without deleting
+    any active listener or unexpected file.
+    """
+    with tempfile.TemporaryDirectory(prefix="gsm-") as d:
+        sock_path = Path(d) / "control.sock"
+        stale = socket.socket(socket.AF_UNIX)
+        stale.bind(str(sock_path))
+        stale.close()
+
+        real_server = ssh._Server
+
+        class FastServer(real_server):
+            def serve_forever(self, poll_interval=0.2):
+                return None
+
+        monkeypatch.setattr(ssh, "_Server", FastServer)
+        ssh.serve(sys.executable, sock_path)
+        assert not sock_path.exists()
+
+        active = socket.socket(socket.AF_UNIX)
+        active.bind(str(sock_path))
+        active.listen(1)
+        try:
+            with pytest.raises(RuntimeError, match="live listener"):
+                ssh.serve(sys.executable, sock_path)
+        finally:
+            active.close()
+            sock_path.unlink()
+
+        sock_path.write_text("untrusted", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="unexpected SSH socket"):
+            ssh.serve(sys.executable, sock_path)
