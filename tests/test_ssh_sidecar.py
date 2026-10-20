@@ -18,7 +18,7 @@ def test_restrict_host_connection_options_and_forward_by_default(monkeypatch):
     monkeypatch.delenv("GUMACU_SSH_DENY_TOOLS", raising=False)
     assert ssh._secure_arguments("ssh_exec", {
         "target": "gumacu-netcup-local", "command": "id"
-    })["command"] == "id"
+    })["strict_host_key_checking"] == "yes"
     with pytest.raises(ValueError, match="only the configured SSH target"):
         ssh._secure_arguments("ssh_exec", {"target": "other", "command": "id"})
     with pytest.raises(ValueError, match="connection parameters"):
