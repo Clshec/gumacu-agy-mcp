@@ -52,7 +52,7 @@ def _disabled_tools() -> set[str]:
 
 
 def _secure_arguments(tool: str, args: dict[str, Any]) -> dict[str, Any]:
-    if not _ACTION_NAME.fullmatch(tool):
+    if not isinstance(tool, str) or not _ACTION_NAME.fullmatch(tool):
         raise ValueError("invalid SSH tool name")
     if tool in _disabled_tools():
         raise ValueError("SSH tool not enabled in operator profile")
@@ -174,7 +174,12 @@ class StdioBackend:
                 if data.get("kind") != "call":
                     return {"success": False, "error": "unsupported request"}
                 name = data.get("name")
-                args = _secure_arguments(name, data.get("arguments", {}))
+                try:
+                    args = _secure_arguments(name, data.get("arguments", {}))
+                except ValueError as exc:
+                    # Only policy validation text is safe to share with the
+                    # caller. Never expose upstream SSH output in exceptions.
+                    return {"success": False, "error": str(exc)}
                 if name not in self.allowed:
                     return {"success": False, "error": "unknown upstream SSH tool"}
                 reply = self._raw("tools/call", {"name": name, "arguments": args})
