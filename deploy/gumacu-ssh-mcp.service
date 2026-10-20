@@ -11,7 +11,8 @@ UMask=0077
 RuntimeDirectory=gumacu-ssh-mcp
 RuntimeDirectoryMode=0700
 Environment=GUMACU_SSH_SOCKET=/run/gumacu-ssh-mcp/control.sock
-Environment=GUMACU_SSH_TARGET=gumacu-netcup-local
+Environment=GUMACU_SSH_TARGET=root@127.0.0.1
+Environment=GUMACU_SSH_IDENTITY_FILE=/root/.ssh/gumacu_operator_ed25519
 Environment=GUMACU_SSH_DENY_TOOLS=ssh_forward,ssh_list_forwards,ssh_stop_forward
 Environment=SSH_MCP_STATE_DIR=/var/lib/gumacu-ssh-mcp/sessions
 StateDirectory=gumacu-ssh-mcp
