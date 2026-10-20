@@ -24,7 +24,7 @@ from typing import Any
 _MAX_INPUT = 256_000
 _MAX_OUTPUT = 2_000_000
 _ACTION_NAME = re.compile(r"^ssh_[a-z][a-z0-9_]{0,63}$")
-_TARGET_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_TARGET_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,128}$")
 _BLOCKED_CONNECTION_ARGS = frozenset({
     "extra_ssh_args", "identity_file", "known_hosts_file",
     "strict_host_key_checking", "port",
@@ -63,7 +63,17 @@ def _secure_arguments(tool: str, args: dict[str, Any]) -> dict[str, Any]:
     fixed_target = _target()
     if "target" in args and args["target"] != fixed_target:
         raise ValueError("only the configured SSH target is allowed")
-    return dict(args)
+    safe = dict(args)
+    # The service operator owns these settings; the model cannot choose keys
+    # or disable host-key checking. Only tools with a target use them.
+    if "target" in safe:
+        identity = os.getenv("GUMACU_SSH_IDENTITY_FILE")
+        if identity:
+            if not Path(identity).is_absolute():
+                raise ValueError("configured SSH identity must be an absolute path")
+            safe["identity_file"] = identity
+        safe["strict_host_key_checking"] = "yes"
+    return safe
 
 
 def _call_socket(message: dict[str, Any]) -> dict[str, Any]:
