@@ -205,7 +205,7 @@ class StdioBackend:
                 self.proc = None
 
 
-class _Server(socketserver.ThreadingUnixStreamServer):
+class _Server(getattr(socketserver, "ThreadingUnixStreamServer", socketserver.ThreadingTCPServer)):
     daemon_threads = True
     allow_reuse_address = False
 
