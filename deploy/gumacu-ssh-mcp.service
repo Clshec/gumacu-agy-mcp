@@ -1,0 +1,31 @@
+[Unit]
+Description=Gumacu optional persistent SSH MCP backend
+After=network-online.target ssh.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+RuntimeDirectory=gumacu-ssh-mcp
+RuntimeDirectoryMode=0700
+Environment=GUMACU_SSH_SOCKET=/run/gumacu-ssh-mcp/control.sock
+Environment=GUMACU_SSH_TARGET=gumacu-netcup-local
+Environment=GUMACU_SSH_DENY_TOOLS=ssh_forward,ssh_list_forwards,ssh_stop_forward
+Environment=SSH_MCP_STATE_DIR=/var/lib/gumacu-ssh-mcp/sessions
+StateDirectory=gumacu-ssh-mcp
+StateDirectoryMode=0700
+ExecStart=/opt/gumacu-agy-mcp/venv/bin/python -m agy_mcp.ssh_sidecar --binary /opt/gumacu-ssh-mcp/venv/bin/ssh-mcp
+Restart=on-failure
+RestartSec=4
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/gumacu-ssh-mcp /var/lib/gumacu-ssh-mcp
+MemoryMax=192M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
