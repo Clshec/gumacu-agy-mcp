@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import threading
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
