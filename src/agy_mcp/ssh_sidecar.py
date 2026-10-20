@@ -250,12 +250,28 @@ class _Handler(socketserver.StreamRequestHandler):
 
 
 def serve(executable: str, socket_path: Path) -> None:
-    # Refuse to unlink an existing socket that may belong to an active service.
+    # Recover an orphaned socket left by SIGKILL/OOM, while never replacing
+    # a live listener or an untrusted file. The parent must be private so only
+    # its owner can create or remove entries in it.
     socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if socket_path.parent.is_symlink():
-        raise ValueError("socket parent cannot be symlink")
+    parent = socket_path.parent
+    parent_stat = parent.stat()
+    if parent.is_symlink() or not stat.S_ISDIR(parent_stat.st_mode):
+        raise ValueError("socket parent must be a real directory")
+    if parent_stat.st_uid != os.geteuid() or parent_stat.st_mode & 0o077:
+        raise ValueError("socket parent must be private to the service user")
     if socket_path.exists() or socket_path.is_symlink():
-        raise RuntimeError("SSH socket already exists; refusing to replace it")
+        current = socket_path.lstat()
+        if not stat.S_ISSOCK(current.st_mode) or current.st_uid != os.geteuid():
+            raise RuntimeError("refusing to replace unexpected SSH socket path")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            try:
+                probe.connect(str(socket_path))
+            except ConnectionRefusedError:
+                # No listening process; same-owner orphan in private directory.
+                socket_path.unlink()
+            else:
+                raise RuntimeError("SSH socket already has a live listener")
     os.umask(0o077)
     backend = StdioBackend(executable)
     server = _Server(str(socket_path), backend)
