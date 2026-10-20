@@ -33,8 +33,9 @@ MCP protocol adapter. Do not blindly track upstream main in production.
 ## Safe installation (opt-in)
 
 1. Confirm a dedicated SSH account with required rights for the host.
-   The default SSH host alias is gumacu-netcup-local, configured in the
-   SIDE-CAR SERVICE USER's OpenSSH config. Leave strict host key checking on.
+   The systemd unit uses a single fixed root@127.0.0.1 endpoint with a previously
+   verified existing operator SSH identity. The key file is not copied or read
+   into the repository. Leave strict host key checking on.
    Check existing known_hosts and authorized_keys before adding any key.
 2. Install upstream in an isolated virtual environment, never into Gumacu's:
 
@@ -43,20 +44,13 @@ MCP protocol adapter. Do not blindly track upstream main in production.
    /opt/gumacu-ssh-mcp/venv/bin/pip install 'git+https://github.com/slepp/ssh-mcp.git@37381ddc68a941b62ed8557dcbb5644dc3b6c5fd'
 
    If pip is absent use uv venv/uv pip install in the same isolated venv.
-3. Configure a fixed SSH alias in the service user's ~/.ssh/config
-   (adapt account and key to the actual verified installation):
-
-   Host gumacu-netcup-local
-     HostName 127.0.0.1
-     User gumacu-admin
-     IdentityFile /secure/operator/key
-     StrictHostKeyChecking yes
-     IdentitiesOnly yes
-     BatchMode yes
-
-   Verify: ssh -o BatchMode=yes gumacu-netcup-local 'id'.
-   Neither gumacu-admin's password sudo nor root's loopback authentication
-   is currently assumed to work; test and explicitly provision if needed.
+3. Verify that the existing root loopback SSH key works before enabling
+   the sidecar. The service controls its target/identity with
+   GUMACU_SSH_TARGET and GUMACU_SSH_IDENTITY_FILE, not with chat-supplied
+   SSH flags or changes to the host's SSH daemon.
+   The already-tested installation can authenticate as root using the
+   existing operator identity with strict host-key checking.
+   Do not create new root SSH access solely for this feature.
 4. Copy deploy/gumacu-ssh-mcp.service into /etc/systemd/system/, run
    systemctl daemon-reload and systemctl enable --now gumacu-ssh-mcp.service.
    Never restart the existing Gumacu MCP, Telegram, or Gateway services.
@@ -65,7 +59,7 @@ MCP protocol adapter. Do not blindly track upstream main in production.
    The catalog returns the upstream schemas dynamically. For example:
    agy_dispatch(device_id="linux-netcup",action="ssh_call",
    arguments={"name":"ssh_exec","arguments":
-   {"target":"gumacu-netcup-local","command":"id"}}).
+   {"target":"root@127.0.0.1","command":"id"}}).
 
 Target is pinned; user-supplied port, identity_file, known_hosts_file,
 strict_host_key_checking and extra_ssh_args are rejected. Port-forward
