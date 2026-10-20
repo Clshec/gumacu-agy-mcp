@@ -80,6 +80,7 @@ from agy_mcp.orchestrator import Orchestrator
 from agy_mcp.remote_policy import restrict_request, restrict_tools
 from agy_mcp.safety import SafetyPolicy
 from agy_mcp.session_store import SessionStore
+from agy_mcp.ssh_sidecar import ssh_call, ssh_catalog
 from agy_mcp.supervisor import Supervisor
 
 # ---------------------------------------------------------------------------
@@ -1761,6 +1762,8 @@ register_capability_tools(
         "operation_status": operation_status,
         "operation_list": operation_list,
         "operation_finish": operation_finish,
+        "ssh_catalog": ssh_catalog,
+        "ssh_call": ssh_call,
     },
 )
 

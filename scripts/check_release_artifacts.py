@@ -132,6 +132,7 @@ _REQUIRED_SDIST_BASE_FILES: set[str] = {
     "src/agy_mcp/device_gateway.py",
     "src/agy_mcp/capability_gateway.py",
     "src/agy_mcp/reload_guard.py",
+    "src/agy_mcp/ssh_sidecar.py",
     "src/agy_mcp/interactive_operations.py",
     "src/agy_mcp/device_tools.py",
     "src/agy_mcp/events.py",
