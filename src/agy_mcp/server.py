@@ -80,7 +80,7 @@ from agy_mcp.orchestrator import Orchestrator
 from agy_mcp.remote_policy import restrict_request, restrict_tools
 from agy_mcp.safety import SafetyPolicy
 from agy_mcp.session_store import SessionStore
-from agy_mcp.ssh_sidecar import ssh_catalog, ssh_call
+from agy_mcp.ssh_sidecar import ssh_call, ssh_catalog
 from agy_mcp.supervisor import Supervisor
 
 # ---------------------------------------------------------------------------
