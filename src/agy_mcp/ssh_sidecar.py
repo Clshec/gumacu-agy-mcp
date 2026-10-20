@@ -188,13 +188,21 @@ class StdioBackend:
 
     def close(self) -> None:
         with self.lock:
-            if self.proc and self.proc.poll() is None:
-                self.proc.terminate()
-                try:
-                    self.proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    self.proc.kill()
-                    self.proc.wait()
+            if self.proc:
+                if self.proc.poll() is None:
+                    self.proc.terminate()
+                    try:
+                        self.proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        self.proc.kill()
+                        self.proc.wait()
+                # Pipes must be explicitly closed even after wait(): failing
+                # to close them emits ResourceWarnings under strict pytest.
+                if self.proc.stdin:
+                    self.proc.stdin.close()
+                if self.proc.stdout:
+                    self.proc.stdout.close()
+                self.proc = None
 
 
 class _Server(socketserver.ThreadingUnixStreamServer):
