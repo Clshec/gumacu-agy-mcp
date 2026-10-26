@@ -1,0 +1,2 @@
+windows-mcp @ git+https://github.com/CursorTouch/Windows-MCP.git@cef52ec47429f22ac3232c112d8f002ac7cb50b1
+fastmcp==3.4.11

@@ -41,3 +41,12 @@ FEATURES/LIMITATIONS:
 Device agent only runs explicitly enumerated agy-mcp tools; no arbitrary shell execution is forwarded. Workspace and execution permission checks use the existing remote_policy controlled/controlled-write profiles. Default controlled forbids writes; controlled-write grants headless writing only when explicitly enabled on that node. Request IDs and per-node job IDs are distinct, and session affinity is stored in SQLite. Leased requests are NOT silently replayed after agent crashes to avoid duplicated effects; investigate and resolve stuck leased jobs manually. Completion responses are cached locally by the agent. Broker state DB contains user prompts/results and must have strictly restricted file permissions and backups. Agent results capped at 1 MB. This is NOT GUI Computer Use, nor guaranteed real-time notifications for remote nodes.
 
 QA/ROLLBACK: run pytest -q tests/test_device_gateway.py on Linux and Windows, compare legacy full test suite, then test agy_devices heartbeat and a harmless read-only remote run before enabling writes. Back up production environment and broker DB; stop broker/agent and remove new AGY_DEVICE_GATEWAY_* configuration to roll back without changing existing Linux tool implementations or session store.
+# Direct Windows tools (optional)
+
+For ChatGPT to operate Windows itself without delegating to Antigravity, use
+the [Windows-MCP tunnel integration](../integrations/windows-mcp/README.md).
+It preserves Linux tools and adds native Windows tools behind the same private
+tunnel, including the stable `agy_capabilities` / `agy_dispatch` facade.
+The legacy Windows Antigravity agent is a separate execution mode and need not
+run alongside this integration. The optional integration is installed from the
+repository checkout and has its own Python 3.14 environment.
