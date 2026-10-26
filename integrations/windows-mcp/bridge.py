@@ -125,6 +125,48 @@ def with_windows(data: dict, online: bool) -> dict:
     return result
 
 
+class PerRequestUpstream:
+    """Own a Linux MCP transport for one operation, never a stale shared child.
+
+    The Linux stdio frontend can retire after a source revision changes. Jobs
+    and sessions are durable on Linux, independently of that frontend. Opening
+    a fresh transport per operation avoids retaining a retired SSH connection.
+    A failed tool call is never retried: it may already have had side effects.
+    """
+
+    def __init__(self, config: dict):
+        self.params = StdioServerParameters(**config)
+
+    @asynccontextmanager
+    async def connect(self):
+        async with stdio_client(self.params) as (read, write):
+            async with ClientSession(read, write) as session:
+                initialized = await session.initialize()
+                yield session, initialized
+
+    async def _invoke(self, method: str, *args, **kwargs):
+        async with self.connect() as (session, _):
+            return await getattr(session, method)(*args, **kwargs)
+
+    async def call_tool(self, *args, **kwargs):
+        return await self._invoke("call_tool", *args, **kwargs)
+
+    async def list_tools(self, *args, **kwargs):
+        return await self._invoke("list_tools", *args, **kwargs)
+
+    async def list_resources(self, *args, **kwargs):
+        return await self._invoke("list_resources", *args, **kwargs)
+
+    async def read_resource(self, *args, **kwargs):
+        return await self._invoke("read_resource", *args, **kwargs)
+
+    async def list_prompts(self, *args, **kwargs):
+        return await self._invoke("list_prompts", *args, **kwargs)
+
+    async def get_prompt(self, *args, **kwargs):
+        return await self._invoke("get_prompt", *args, **kwargs)
+
+
 class Bridge:
     def __init__(self, upstream: ClientSession, windows: ClientSession):
         self.upstream = upstream
@@ -189,21 +231,19 @@ def make_server(config: dict) -> tuple[Server, InitializationOptions]:
     @asynccontextmanager
     async def lifespan(server):
         async with AsyncExitStack() as stack:
-            sessions = []
-            for entry in (config["upstream"], config["windows"]):
-                params = StdioServerParameters(**entry)
-                read, write = await stack.enter_async_context(stdio_client(params))
-                session = await stack.enter_async_context(ClientSession(read, write))
-                initialized = await session.initialize()
-                if not sessions:
-                    initialization_options.instructions = (initialized.instructions or "") + (
-                        "\n\nNative Windows: windows-main uses direct Windows-MCP tools, "
-                        "not Antigravity jobs. Discover windows_catalog and windows_call "
-                        "through agy_capabilities/agy_dispatch. Prefer PowerShell/FileSystem "
-                        "for background work. Desktop input respects user ownership."
-                    )
-                sessions.append(session)
-            yield Bridge(*sessions)
+            upstream = PerRequestUpstream(config["upstream"])
+            async with upstream.connect() as (_, initialized):
+                initialization_options.instructions = (initialized.instructions or "") + (
+                    "\n\nNative Windows: windows-main uses direct Windows-MCP tools, "
+                    "not Antigravity jobs. Discover windows_catalog and windows_call "
+                    "through agy_capabilities/agy_dispatch. Prefer PowerShell/FileSystem "
+                    "for background work. Desktop input respects user ownership."
+                )
+            params = StdioServerParameters(**config["windows"])
+            read, write = await stack.enter_async_context(stdio_client(params))
+            windows = await stack.enter_async_context(ClientSession(read, write))
+            await windows.initialize()
+            yield Bridge(upstream, windows)
 
     server = Server("gumacu-windows-bridge", version="1.0.0", lifespan=lifespan)
 

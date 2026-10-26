@@ -12,8 +12,11 @@ while direct mouse and keyboard actions retain ownership protection.
 ## Connection and compatibility
 
 The existing Secure MCP Tunnel remains the only remote entry point. Its `main`
-stdio binding starts `bridge.py`, which maintains one initialized MCP connection
-to each backend. Linux tool names and Linux dispatch requests remain unchanged.
+stdio binding starts `bridge.py`. Windows-MCP has one persistent initialized
+connection. Each Linux operation opens and closes its own initialized transport,
+so a retired Linux frontend cannot poison subsequent calls. Linux jobs, sessions
+and persistent SSH-sidecar sessions remain on their existing durable services.
+An interrupted tool call is never replayed. Linux tool names and Linux dispatch requests remain unchanged.
 Native Windows tools are also published as `windows_<original-name>`.
 
 Clients with a cached Gumacu tool manifest can use the existing stable facade:

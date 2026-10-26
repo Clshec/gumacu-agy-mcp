@@ -1,9 +1,11 @@
 import asyncio
 import importlib.util
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from mcp import types
 from mcp.shared.message import SessionMessage
 
@@ -14,6 +16,34 @@ _spec.loader.exec_module(_bridge)
 Bridge = _bridge.Bridge
 json_result = _bridge.json_result
 with_windows = _bridge.with_windows
+
+
+def test_failed_linux_operation_is_not_replayed_and_next_operation_reconnects():
+    async def check():
+        failed = session()
+        failed.call_tool.side_effect = ConnectionError("frontend retired")
+        fresh = session()
+        connections = [failed, fresh]
+        closed = []
+
+        @asynccontextmanager
+        async def connect():
+            current = connections.pop(0)
+            try:
+                yield current, None
+            finally:
+                closed.append(current)
+
+        upstream = _bridge.PerRequestUpstream({"command": "unused-test-command"})
+        upstream.connect = connect
+        with pytest.raises(ConnectionError):
+            await upstream.call_tool("agy_dispatch", {"action": "operation_step"})
+        failed.call_tool.assert_awaited_once()
+        assert len(connections) == 1
+        await upstream.call_tool("agy_doctor", {})
+        fresh.call_tool.assert_awaited_once_with("agy_doctor", {})
+        assert closed == [failed, fresh]
+    run(check())
 
 
 def test_resumed_session_bootstraps_without_replaying_or_leaking_internal_id():
