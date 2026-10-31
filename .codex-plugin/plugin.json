@@ -3,16 +3,16 @@
   "author": {
     "name": "App developer"
   },
-  "description": "netcup",
+  "description": "Alf Control — direct MCP control of servers and devices across providers.",
   "interface": {
     "capabilities": [],
     "category": "Other",
     "defaultPrompt": null,
     "developerName": "App developer",
-    "displayName": "netcup",
-    "longDescription": "netcup",
-    "shortDescription": "netcup"
+    "displayName": "Alf Control",
+    "longDescription": "ChatGPT controls authorized Linux and Windows devices through direct MCP tools across hosting providers.",
+    "shortDescription": "Control authorized servers and devices"
   },
   "name": "dev-6acf79599a7c8191a7eb5b52b4d30c51",
-  "version": "1.0.1"
+  "version": "1.1.0"
 }

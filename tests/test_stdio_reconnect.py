@@ -11,10 +11,17 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Linux SSH entry
 
 
 @pytest.mark.parametrize("normal", [False, True])
-def test_fresh_child_handles_normal_and_resumed_client(normal, tmp_path):
-    env = dict(os.environ, AGY_MCP_SESSION_ROOT=str(tmp_path), AGY_MCP_DISABLE_TELEGRAM_BOT="1")
+@pytest.mark.parametrize("entry", ["alf_control.stdio_reconnect", "agy_mcp.stdio_reconnect", "launcher"])
+def test_fresh_child_handles_normal_and_resumed_client(normal, entry, tmp_path):
+    env = dict(os.environ, ALF_CONTROL_AUTO_REFRESH="0")
+    if entry == "launcher":
+        from pathlib import Path
+        command = ["sh", str(Path(__file__).parents[1] / "deploy/run-mcp.sh")]
+        env["ALF_CONTROL_PYTHON"] = sys.executable
+    else:
+        command = [sys.executable, "-m", entry]
     child = subprocess.Popen(
-        [sys.executable, "-m", "agy_mcp.stdio_reconnect"],
+        command,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
     )
     requests = []
@@ -42,6 +49,9 @@ def test_fresh_child_handles_normal_and_resumed_client(normal, tmp_path):
         if child.poll() is None:
             child.kill()
             child.wait()
+        for stream in (child.stdin, child.stdout, child.stderr):
+            if stream and not stream.closed:
+                stream.close()
     assert child.returncode == 0, errors
     assert not output  # bootstrap response never leaks upstream
     assert len(responses) == len(requests)  # bootstrap response never leaks upstream

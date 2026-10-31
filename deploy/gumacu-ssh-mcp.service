@@ -1,5 +1,5 @@
 [Unit]
-Description=Gumacu optional persistent SSH MCP backend
+Description=Alf Control persistent SSH MCP backend (legacy unit name)
 After=network-online.target ssh.service
 Wants=network-online.target
 
@@ -10,14 +10,14 @@ Group=root
 UMask=0077
 RuntimeDirectory=gumacu-ssh-mcp
 RuntimeDirectoryMode=0700
-Environment=GUMACU_SSH_SOCKET=/run/gumacu-ssh-mcp/control.sock
-Environment=GUMACU_SSH_TARGET=root@127.0.0.1
-Environment=GUMACU_SSH_IDENTITY_FILE=/root/.ssh/gumacu_operator_ed25519
-Environment=GUMACU_SSH_DENY_TOOLS=ssh_forward,ssh_list_forwards,ssh_stop_forward
+Environment=ALF_CONTROL_SSH_SOCKET=/run/gumacu-ssh-mcp/control.sock
+Environment=ALF_CONTROL_SSH_TARGET=root@127.0.0.1
+Environment=ALF_CONTROL_SSH_IDENTITY_FILE=/root/.ssh/gumacu_operator_ed25519
+Environment=ALF_CONTROL_SSH_DENY_TOOLS=ssh_forward,ssh_list_forwards,ssh_stop_forward
 Environment=SSH_MCP_STATE_DIR=/var/lib/gumacu-ssh-mcp/sessions
 StateDirectory=gumacu-ssh-mcp
 StateDirectoryMode=0700
-ExecStart=/opt/gumacu-agy-mcp/venv/bin/python -m agy_mcp.ssh_sidecar --binary /opt/gumacu-ssh-mcp/venv/bin/ssh-mcp
+ExecStart=/opt/gumacu-agy-mcp/venv/bin/python -m alf_control.ssh_sidecar --binary /opt/gumacu-ssh-mcp/venv/bin/ssh-mcp
 Restart=on-failure
 RestartSec=4
 NoNewPrivileges=true

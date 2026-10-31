@@ -1,0 +1,16 @@
+{
+  "devices": [
+    {
+      "id": "linux-netcup",
+      "provider": "netcup",
+      "os": "Linux",
+      "socket": "/run/gumacu-ssh-mcp/control.sock"
+    },
+    {
+      "id": "linux-other-provider",
+      "provider": "other",
+      "os": "Linux",
+      "socket": "/run/alf-control-other/control.sock"
+    }
+  ]
+}

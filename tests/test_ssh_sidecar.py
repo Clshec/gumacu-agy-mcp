@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agy_mcp import ssh_sidecar as ssh
+from alf_control import ssh_sidecar as ssh
 
 
 def test_restrict_host_connection_options_and_forward_by_default(monkeypatch):
@@ -45,7 +45,8 @@ def test_stable_catalog_and_integration_over_unix_socket(monkeypatch, tmp_path):
         "#!" + sys.executable + "\n"
         "import json,sys\n"
         "for line in sys.stdin:\n"
-        " x=json.loads(line); m=x['method']; p=x['params']\n"
+        " x=json.loads(line); m=x['method']; p=x.get('params',{})\n"
+        " if 'id' not in x: continue\n"
         " if m=='initialize': v={'result':{'serverInfo':{'name':'ssh-mcp'}}}\n"
         " elif m=='tools/list': v={'result':{'tools':[{'name':'ssh_exec','inputSchema':{'type':'object'}},"
         "{'name':'ssh_forward','inputSchema':{'type':'object'}}]}}\n"
@@ -88,10 +89,10 @@ def test_stable_catalog_and_integration_over_unix_socket(monkeypatch, tmp_path):
 
 
 def test_sidecar_uses_separate_stable_tools_without_registering_new_top_level_tools():
-    from agy_mcp.capability_gateway import ACTIONS
+    from alf_control.capability_gateway import ACTIONS
     assert "ssh_catalog" in ACTIONS
     assert "ssh_call" in ACTIONS
-    from agy_mcp import server
+    from alf_control import server
     names = [x.name for x in asyncio.run(server.mcp.list_tools())]
     assert "agy_dispatch" in names
     assert "ssh_exec" not in names

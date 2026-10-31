@@ -102,9 +102,10 @@ def test_other_devices_forward_unchanged():
     windows.call_tool.assert_not_awaited()
 
 
-def test_windows_catalog_is_live_and_lists_schemas():
+@pytest.mark.parametrize("facade", ["alf_dispatch", "agy_dispatch"])
+def test_windows_catalog_is_live_and_lists_schemas(facade):
     upstream, windows = session(), session()
-    result = run(Bridge(upstream, windows).call("agy_dispatch", {"device_id": "windows-main", "action": "windows_catalog"}))
+    result = run(Bridge(upstream, windows).call(facade, {"device_id": "windows-main", "action": "windows_catalog"}))
     assert [t["name"] for t in result.structuredContent["tools"]] == ["PowerShell", "Screenshot"]
     upstream.call_tool.assert_not_awaited()
 
@@ -134,6 +135,19 @@ def test_capabilities_replace_stale_agent_without_mutating_upstream():
     assert result["devices"][0] == data["devices"][0]
     assert result["devices"][1]["actions"] == ["windows_catalog", "windows_call"]
     assert data["devices"][1]["online"] is False
+
+
+def test_old_upstream_cannot_reintroduce_removed_execution():
+    upstream, windows = session(), session()
+    bridge = Bridge(upstream, windows)
+    for name, args in [("agy_start", {"PROMPT": "work"}),
+                       ("agy_dispatch", {"device_id": "linux-netcup", "action": "start"})]:
+        result = run(bridge.call(name, args))
+        assert result.structuredContent["success"] is False
+    upstream.call_tool.assert_not_awaited()
+    data = {"devices": [{"id": "linux-netcup", "online": True,
+                          "actions": ["start", "ssh_call", "operation_step"]}]}
+    assert with_windows(data, True)["devices"][0]["actions"] == ["ssh_call"]
 
 
 def test_direct_tool_and_argument_limit():

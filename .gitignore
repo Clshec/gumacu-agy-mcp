@@ -1,7 +1,7 @@
 # Reference repos (read-only mirrors of upstream projects, never committed)
 .refs/
 
-# Local agy-mcp runtime state (session store, worktrees, logs, artifacts)
+# Local Alf Control runtime state (session store, worktrees, logs, artifacts)
 .agy-mcp/
 
 # Python
@@ -88,3 +88,6 @@ docs/local-test-checklist.md
 docs/internal-*.md
 docs/private-*.md
 docs/audit-*.md
+
+.alf-control/
+integrations/windows-mcp/backends.json

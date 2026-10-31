@@ -1,4 +1,4 @@
-"""Combine existing Gumacu tools and native Windows-MCP in one private tunnel.
+"""Combine Alf Control tools and native Windows-MCP in one private tunnel.
 
 Windows-MCP remains an unmodified, separately licensed dependency. This module
 only forwards MCP requests; it contains no shell executor or model client.
@@ -26,6 +26,8 @@ WINDOWS_ID = "windows-main"
 PREFIX = "windows_"
 ACTIONS = ["windows_catalog", "windows_call"]
 MAX_ARGUMENT_BYTES = 256_000
+DIRECT_TOOLS = frozenset({"alf_capabilities", "alf_dispatch", "alf_doctor",
+                          "agy_capabilities", "agy_dispatch", "agy_doctor"})
 
 
 class ResumeSafeInput(ObjectReceiveStream):
@@ -40,7 +42,7 @@ class ResumeSafeInput(ObjectReceiveStream):
         self.stream = stream
         self.state = "first"
         self.pending = None
-        self.bootstrap_id = "gumacu-bootstrap-" + uuid.uuid4().hex
+        self.bootstrap_id = "alf-control-bootstrap-" + uuid.uuid4().hex
         self.initialized = anyio.Event()
         self.bootstrap_error = False
 
@@ -56,7 +58,7 @@ class ResumeSafeInput(ObjectReceiveStream):
             return SessionMessage(types.JSONRPCMessage(types.JSONRPCRequest(
                 jsonrpc="2.0", id=self.bootstrap_id, method="initialize",
                 params={"protocolVersion": "2025-06-18", "capabilities": {},
-                        "clientInfo": {"name": "gumacu-resume", "version": "1"}},
+                        "clientInfo": {"name": "alf-control-resume", "version": "1"}},
             )))
         if self.state == "await_initialize":
             with anyio.fail_after(30):
@@ -117,6 +119,11 @@ def unpack(result: types.CallToolResult) -> dict:
 def with_windows(data: dict, online: bool) -> dict:
     result = deepcopy(data)
     result["devices"] = [d for d in result.get("devices", []) if d.get("id") != WINDOWS_ID]
+    # A rolling upgrade must never re-advertise an old upstream's model actions.
+    for device in result["devices"]:
+        device["actions"] = [a for a in device.get("actions", [])
+                             if a in {"ssh_catalog", "ssh_call"}]
+    result["devices"] = [d for d in result["devices"] if d["actions"]]
     result["devices"].append({
         "id": WINDOWS_ID, "os": "Windows", "online": online, "local": True,
         "actions": ACTIONS, "backend": "Windows-MCP", "mode": "direct-tools",
@@ -183,7 +190,14 @@ class Bridge:
                 return tools
 
     async def call(self, name: str, arguments: dict) -> types.CallToolResult:
-        if name == "agy_capabilities":
+        if name in {"alf_doctor", "agy_doctor"}:
+            capabilities = "alf_capabilities" if name == "alf_doctor" else "agy_capabilities"
+            data = unpack(await self.call(capabilities, {}))
+            healthy = bool(data.get("devices")) and all(d.get("online") for d in data["devices"])
+            return json_result({"success": healthy, "version": "0.2.0",
+                                "report": {"healthy": healthy, "devices": data.get("devices", []),
+                                           "client_visible_tools": "not_observable_from_mcp_server"}})
+        if name in {"alf_capabilities", "agy_capabilities"}:
             data = unpack(await self.upstream.call_tool(name, arguments))
             try:
                 await self.windows_tools()
@@ -191,7 +205,7 @@ class Bridge:
             except Exception:
                 online = False
             return json_result(with_windows(data, online))
-        if name == "agy_dispatch" and arguments.get("device_id") == WINDOWS_ID:
+        if name in {"alf_dispatch", "agy_dispatch"} and arguments.get("device_id") == WINDOWS_ID:
             action = arguments.get("action")
             args = arguments.get("arguments")
             args = {} if args is None else args
@@ -213,9 +227,13 @@ class Bridge:
                     return json_result({"success": False, "error": "provide name and optional arguments"})
                 native_args = args.get("arguments")
                 return await self.call_windows(args["name"], {} if native_args is None else native_args)
-            return json_result({"success": False, "error": "action not available; call agy_capabilities"})
+            return json_result({"success": False, "error": "action not available; call alf_capabilities"})
         if name.startswith(PREFIX):
             return await self.call_windows(name[len(PREFIX):], arguments)
+        if name not in DIRECT_TOOLS:
+            return json_result({"success": False, "error": "tool not available in Alf Control"})
+        if name in {"alf_dispatch", "agy_dispatch"} and arguments.get("action") not in {"ssh_catalog", "ssh_call"}:
+            return json_result({"success": False, "error": "action not available in Alf Control"})
         return await self.upstream.call_tool(name, arguments)
 
     async def call_windows(self, name: str, arguments: dict) -> types.CallToolResult:
@@ -235,8 +253,8 @@ def make_server(config: dict) -> tuple[Server, InitializationOptions]:
             async with upstream.connect() as (_, initialized):
                 initialization_options.instructions = (initialized.instructions or "") + (
                     "\n\nNative Windows: windows-main uses direct Windows-MCP tools, "
-                    "not Antigravity jobs. Discover windows_catalog and windows_call "
-                    "through agy_capabilities/agy_dispatch. Prefer PowerShell/FileSystem "
+                    "with windows_catalog and windows_call "
+                    "through alf_capabilities/alf_dispatch. Prefer PowerShell/FileSystem "
                     "for background work. Desktop input respects user ownership."
                 )
             params = StdioServerParameters(**config["windows"])
@@ -245,7 +263,7 @@ def make_server(config: dict) -> tuple[Server, InitializationOptions]:
             await windows.initialize()
             yield Bridge(upstream, windows)
 
-    server = Server("gumacu-windows-bridge", version="1.0.0", lifespan=lifespan)
+    server = Server("Alf Control", version="1.0.0", lifespan=lifespan)
 
     def bridge() -> Bridge:
         return server.request_context.lifespan_context
@@ -256,7 +274,7 @@ def make_server(config: dict) -> tuple[Server, InitializationOptions]:
         cursor = None
         while True:
             page = await bridge().upstream.list_tools(cursor=cursor)
-            tools.extend(page.tools)
+            tools.extend(t for t in page.tools if t.name in DIRECT_TOOLS)
             cursor = page.nextCursor
             if not cursor:
                 break

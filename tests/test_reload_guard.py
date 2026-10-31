@@ -1,17 +1,15 @@
-"""Revision-triggered MCP reload never interrupts an in-flight agent task."""
+"""Revision-triggered MCP reload never interrupts an in-flight backend operation."""
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import threading
 import time
-from types import SimpleNamespace
 
 import pytest
 
-from agy_mcp import reload_guard
+from alf_control import reload_guard
 
 
 class _Child:
@@ -37,8 +35,7 @@ def test_idle_reload_refuses_inflight_and_running_jobs(monkeypatch):
     track = reload_guard.RequestTracker()
     track.last_activity -= 60
     monkeypatch.setattr(reload_guard, "_child_has_descendants", lambda pid: False)
-    monkeypatch.setattr(reload_guard, "_child_has_running_jobs", lambda pid: False)
-    monkeypatch.setenv("AGY_MCP_RELOAD_IDLE_SECONDS", "0.1")
+    monkeypatch.setenv("ALF_CONTROL_RELOAD_IDLE_SECONDS", "0.1")
     if sys.platform != "linux":
         assert not reload_guard.can_recycle(_Child(), track)
         return
@@ -50,35 +47,11 @@ def test_idle_reload_refuses_inflight_and_running_jobs(monkeypatch):
     monkeypatch.setattr(reload_guard, "_child_has_descendants", lambda pid: True)
     assert not reload_guard.can_recycle(_Child(), track)
     monkeypatch.setattr(reload_guard, "_child_has_descendants", lambda pid: False)
-    monkeypatch.setattr(reload_guard, "_child_has_running_jobs", lambda pid: True)
-    assert not reload_guard.can_recycle(_Child(), track)
-
-
-def test_running_supervisor_job_is_a_reload_blocker(monkeypatch, tmp_path):
-    import agy_mcp.config as config
-
-    monkeypatch.setattr(
-        config, "get_config", lambda: SimpleNamespace(
-            session_store_root=lambda: tmp_path
-        ),
-    )
-    folder = tmp_path / "job_somevalid"
-    folder.mkdir()
-    payload = {
-        "status": "running",
-        "extra": {"supervisor": {"pid": 2025}},
-    }
-    (folder / "meta.json").write_text(json.dumps(payload), encoding="utf-8")
-    assert reload_guard._child_has_running_jobs(2025)
-    assert not reload_guard._child_has_running_jobs(2026)
-    payload["status"] = "completed"
-    (folder / "meta.json").write_text(json.dumps(payload), encoding="utf-8")
-    assert not reload_guard._child_has_running_jobs(2025)
 
 
 def test_revision_marker_missing_fails_closed(monkeypatch, tmp_path):
     marker = tmp_path / "git-revision"
-    monkeypatch.setenv("AGY_MCP_RELOAD_REVISION_FILE", str(marker))
+    monkeypatch.setenv("ALF_CONTROL_RELOAD_REVISION_FILE", str(marker))
     assert reload_guard.source_revision() is None
     marker.write_text("previous", encoding="utf-8")
     assert reload_guard.source_revision() == "previous"
@@ -88,12 +61,11 @@ def test_revision_marker_missing_fails_closed(monkeypatch, tmp_path):
 def test_revision_change_terminates_only_idle_disposable_child(monkeypatch, tmp_path):
     marker = tmp_path / "git-revision"
     marker.write_text("revision-1", encoding="utf-8")
-    monkeypatch.setenv("AGY_MCP_RELOAD_REVISION_FILE", str(marker))
-    monkeypatch.setenv("AGY_MCP_RELOAD_CHECK_SECONDS", "0.2")
-    monkeypatch.setenv("AGY_MCP_RELOAD_IDLE_SECONDS", "0.1")
-    monkeypatch.setenv("AGY_MCP_AUTO_REFRESH", "1")
+    monkeypatch.setenv("ALF_CONTROL_RELOAD_REVISION_FILE", str(marker))
+    monkeypatch.setenv("ALF_CONTROL_RELOAD_CHECK_SECONDS", "0.2")
+    monkeypatch.setenv("ALF_CONTROL_RELOAD_IDLE_SECONDS", "0.1")
+    monkeypatch.setenv("ALF_CONTROL_AUTO_REFRESH", "1")
     monkeypatch.setattr(reload_guard, "_child_has_descendants", lambda _: False)
-    monkeypatch.setattr(reload_guard, "_child_has_running_jobs", lambda _: False)
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -125,12 +97,11 @@ def test_revision_change_terminates_only_idle_disposable_child(monkeypatch, tmp_
 def test_live_request_blocks_reload_until_result(monkeypatch, tmp_path):
     marker = tmp_path / "rev"
     marker.write_text("a", encoding="utf-8")
-    monkeypatch.setenv("AGY_MCP_RELOAD_REVISION_FILE", str(marker))
-    monkeypatch.setenv("AGY_MCP_RELOAD_CHECK_SECONDS", "0.2")
-    monkeypatch.setenv("AGY_MCP_RELOAD_IDLE_SECONDS", "0.1")
-    monkeypatch.setenv("AGY_MCP_AUTO_REFRESH", "1")
+    monkeypatch.setenv("ALF_CONTROL_RELOAD_REVISION_FILE", str(marker))
+    monkeypatch.setenv("ALF_CONTROL_RELOAD_CHECK_SECONDS", "0.2")
+    monkeypatch.setenv("ALF_CONTROL_RELOAD_IDLE_SECONDS", "0.1")
+    monkeypatch.setenv("ALF_CONTROL_AUTO_REFRESH", "1")
     monkeypatch.setattr(reload_guard, "_child_has_descendants", lambda _: False)
-    monkeypatch.setattr(reload_guard, "_child_has_running_jobs", lambda _: False)
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

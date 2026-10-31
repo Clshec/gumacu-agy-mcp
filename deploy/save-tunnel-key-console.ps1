@@ -8,7 +8,7 @@ try {
     if ($SelfTest) {
         $secret = ConvertTo-SecureString 'dummy-gumacu-console-test' -AsPlainText -Force
     } else {
-        Write-Host 'Gumacu secure key entry. Do not paste the key in chat.'
+        Write-Host 'Alf Control secure key entry. Do not paste the key in chat.'
         Write-Host 'Paste the dedicated Tunnels Read + Use key below, then press Enter.'
         $secret = Read-Host 'Key (hidden)' -AsSecureString
     }

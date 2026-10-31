@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "dev-6acf79599a7c8191a7eb5b52b4d30c51",
-  "version": "1.0.1",
-  "description": "netcup",
+  "version": "1.1.0",
+  "description": "Alf Control — direct MCP control of servers and devices across providers.",
   "author": {
     "name": "App developer"
   },
@@ -10,9 +10,9 @@
     "com.openai": {
       "apps": "./.app.json",
       "interface": {
-        "displayName": "netcup",
-        "shortDescription": "netcup",
-        "longDescription": "netcup",
+        "displayName": "Alf Control",
+        "shortDescription": "Control authorized servers and devices",
+        "longDescription": "ChatGPT controls authorized Linux and Windows devices through direct MCP tools across hosting providers.",
         "developerName": "App developer",
         "category": "Other",
         "capabilities": [],

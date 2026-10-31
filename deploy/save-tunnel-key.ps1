@@ -7,7 +7,7 @@ if ($SelfTest -and [IO.Path]::GetFileName($CredentialPath) -ne 'dpapi-self-test.
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Gumacu - Secure tunnel key (diagnostic)'
+$form.Text = 'Alf Control - Secure tunnel key (diagnostic)'
 $form.Size = New-Object Drawing.Size(560,210)
 $form.StartPosition = 'CenterScreen'
 $form.TopMost = $true

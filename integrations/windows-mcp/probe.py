@@ -20,9 +20,9 @@ async def main(config: Path, output: Path):
             await session.initialize()
             tools = (await session.list_tools()).tools
             names = {t.name for t in tools}
-            assert {"agy_capabilities", "agy_dispatch", "windows_PowerShell"} <= names
-            caps = await session.call_tool("agy_capabilities", {})
-            catalog = await session.call_tool("agy_dispatch", {"device_id": "windows-main", "action": "windows_catalog"})
+            assert {"alf_capabilities", "alf_dispatch", "windows_PowerShell"} <= names
+            caps = await session.call_tool("alf_capabilities", {})
+            catalog = await session.call_tool("alf_dispatch", {"device_id": "windows-main", "action": "windows_catalog"})
             windows = catalog.structuredContent
             if not windows:
                 windows = json.loads(catalog.content[0].text)
@@ -30,7 +30,7 @@ async def main(config: Path, output: Path):
             props = powershell["inputSchema"]["properties"]
             field = next(k for k in ("command", "script") if k in props)
             command = "[pscustomobject]@{Computer=$env:COMPUTERNAME;User=$env:USERNAME;PowerShell=$PSVersionTable.PSVersion.ToString()} | ConvertTo-Json -Compress"
-            direct = await session.call_tool("agy_dispatch", {"device_id": "windows-main", "action": "windows_call", "arguments": {"name": "PowerShell", "arguments": {field: command}}})
+            direct = await session.call_tool("alf_dispatch", {"device_id": "windows-main", "action": "windows_call", "arguments": {"name": "PowerShell", "arguments": {field: command}}})
             if direct.isError:
                 print(json.dumps(direct.model_dump(exclude_none=True), ensure_ascii=False), flush=True)
             assert not direct.isError
@@ -38,8 +38,8 @@ async def main(config: Path, output: Path):
             proof = output.parent / "temporary-windows-mcp-proof.txt"
             assert not proof.exists(), "Do not overwrite existing proof files"
             quoted = str(proof).replace("'", "''")
-            file_command = f"$p='{quoted}'; try {{ [IO.File]::WriteAllText($p,'gumacu-windows-mcp-ok'); if([IO.File]::ReadAllText($p) -ne 'gumacu-windows-mcp-ok'){{throw 'Verification failed'}}; 'WINDOWS_MCP_FILE_VERIFIED' }} finally {{ if(Test-Path -LiteralPath $p){{Remove-Item -LiteralPath $p}} }}"
-            files = await session.call_tool("agy_dispatch", {"device_id": "windows-main", "action": "windows_call", "arguments": {"name": "PowerShell", "arguments": {field: file_command}}})
+            file_command = f"$p='{quoted}'; try {{ [IO.File]::WriteAllText($p,'alf-control-windows-mcp-ok'); if([IO.File]::ReadAllText($p) -ne 'alf-control-windows-mcp-ok'){{throw 'Verification failed'}}; 'WINDOWS_MCP_FILE_VERIFIED' }} finally {{ if(Test-Path -LiteralPath $p){{Remove-Item -LiteralPath $p}} }}"
+            files = await session.call_tool("alf_dispatch", {"device_id": "windows-main", "action": "windows_call", "arguments": {"name": "PowerShell", "arguments": {field: file_command}}})
             assert not files.isError
             assert "WINDOWS_MCP_FILE_VERIFIED" in json.dumps(files.model_dump())
             assert "Status Code: 0" in json.dumps(files.model_dump())

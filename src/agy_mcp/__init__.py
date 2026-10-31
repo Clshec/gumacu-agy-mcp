@@ -1,10 +1,2 @@
-"""agy-mcp — Skill-first, MCP-second bridge to Google Antigravity CLI (agy)."""
-
-from importlib import metadata
-
-try:
-    __version__ = metadata.version("agy-mcp")
-except metadata.PackageNotFoundError:  # editable / source checkout before install
-    __version__ = "0.1.18"
-
-__all__ = ["__version__"]
+"""Deprecated import namespace. Use alf_control."""
+from alf_control import __version__ as __version__
