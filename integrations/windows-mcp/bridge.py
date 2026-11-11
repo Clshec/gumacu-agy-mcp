@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
@@ -40,6 +41,7 @@ class ResumeSafeInput(ObjectReceiveStream):
 
     def __init__(self, stream):
         self.stream = stream
+        self.response_stream = None
         self.state = "first"
         self.pending = None
         self.bootstrap_id = "alf-control-bootstrap-" + uuid.uuid4().hex
@@ -47,19 +49,35 @@ class ResumeSafeInput(ObjectReceiveStream):
         self.bootstrap_error = False
 
     async def receive(self):
-        if self.state == "first":
-            self.pending = await self.stream.receive()
-            if isinstance(self.pending, Exception):
-                return self.pending
-            if getattr(self.pending.message.root, "method", None) == "initialize":
-                self.state = "normal"
-                return self.pending
-            self.state = "await_initialize"
-            return SessionMessage(types.JSONRPCMessage(types.JSONRPCRequest(
-                jsonrpc="2.0", id=self.bootstrap_id, method="initialize",
-                params={"protocolVersion": "2025-06-18", "capabilities": {},
-                        "clientInfo": {"name": "alf-control-resume", "version": "1"}},
-            )))
+        while True:
+            if self.state == "first":
+                self.pending = await self.stream.receive()
+                if isinstance(self.pending, Exception):
+                    return self.pending
+                root = self.pending.message.root
+                method = getattr(root, "method", None)
+                if method == "server/discover":
+                    await self._reject_discovery(root.id)
+                    continue
+                if method == "initialize":
+                    self.state = "normal"
+                    return self.pending
+                self.state = "await_initialize"
+                return SessionMessage(types.JSONRPCMessage(types.JSONRPCRequest(
+                    jsonrpc="2.0", id=self.bootstrap_id, method="initialize",
+                    params={"protocolVersion": "2025-06-18", "capabilities": {},
+                            "clientInfo": {"name": "alf-control-resume", "version": "1"}},
+                )))
+            if self.state == "normal":
+                message = await self.stream.receive()
+                if isinstance(message, Exception):
+                    return message
+                root = message.message.root
+                if getattr(root, "method", None) == "server/discover":
+                    await self._reject_discovery(root.id)
+                    continue
+                return message
+            break
         if self.state == "await_initialize":
             with anyio.fail_after(30):
                 await self.initialized.wait()
@@ -74,6 +92,14 @@ class ResumeSafeInput(ObjectReceiveStream):
             return self.pending
         return await self.stream.receive()
 
+    async def _reject_discovery(self, request_id):
+        if self.response_stream is None:
+            raise RuntimeError("MCP discovery response stream is not connected")
+        await self.response_stream.send(SessionMessage(types.JSONRPCMessage(types.JSONRPCError(
+            jsonrpc="2.0", id=request_id,
+            error=types.ErrorData(code=-32601, message="Method not found"),
+        ))))
+
     async def aclose(self):
         await self.stream.aclose()
 
@@ -82,6 +108,7 @@ class ResumeSafeOutput(ObjectSendStream):
     def __init__(self, stream, input_stream: ResumeSafeInput):
         self.stream = stream
         self.input_stream = input_stream
+        self.input_stream.response_stream = stream
 
     async def send(self, message):
         root = message.message.root
@@ -174,20 +201,106 @@ class PerRequestUpstream:
         return await self._invoke("get_prompt", *args, **kwargs)
 
 
+class RecoveringWindows:
+    """Keep one Windows-MCP process while healthy; replace it after transport errors."""
+
+    def __init__(self, config: dict):
+        self.params = StdioServerParameters(**config)
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._worker_task: asyncio.Task | None = None
+        self._closing = False
+
+    async def _open_session(self) -> tuple[ClientSession, AsyncExitStack]:
+        stack = AsyncExitStack()
+        try:
+            read, write = await stack.enter_async_context(stdio_client(self.params))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            return session, stack
+        except BaseException as error:
+            try:
+                await stack.aclose()
+            except Exception as cleanup_error:
+                error.add_note(f"Windows-MCP session cleanup also failed: {cleanup_error}")
+            raise
+
+    async def _serve(self) -> None:
+        session = None
+        stack = None
+        try:
+            while True:
+                operation, result = await self._queue.get()
+                if operation is None:
+                    break
+                try:
+                    if session is None:
+                        session, stack = await self._open_session()
+                    value = await operation(session)
+                except BaseException as error:
+                    if stack is not None:
+                        try:
+                            await stack.aclose()
+                        except Exception as cleanup_error:
+                            error.add_note(f"Windows-MCP session cleanup also failed: {cleanup_error}")
+                    session = None
+                    stack = None
+                    if not result.done():
+                        result.set_exception(error)
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                else:
+                    if not result.done():
+                        result.set_result(value)
+        finally:
+            if stack is not None:
+                await stack.aclose()
+            while not self._queue.empty():
+                operation, result = self._queue.get_nowait()
+                if operation is not None and not result.done():
+                    result.set_exception(RuntimeError("Windows-MCP worker closed before operation completed"))
+
+    async def run(self, operation: Callable[[ClientSession], Awaitable[object]]) -> object:
+        """Run one serialized operation on the task that owns the stdio lifecycle."""
+        if self._closing:
+            raise RuntimeError("Windows-MCP worker is closing")
+        if self._worker_task is None:
+            self._worker_task = asyncio.create_task(self._serve())
+        result = asyncio.get_running_loop().create_future()
+        result.add_done_callback(lambda future: future.exception() if not future.cancelled() else None)
+        await self._queue.put((operation, result))
+        return await asyncio.shield(result)
+
+    async def close(self) -> None:
+        self._closing = True
+        if self._worker_task is not None:
+            await self._queue.put((None, None))
+            await self._worker_task
+            self._worker_task = None
+
+
 class Bridge:
-    def __init__(self, upstream: ClientSession, windows: ClientSession):
+    def __init__(self, upstream: ClientSession, windows: RecoveringWindows):
         self.upstream = upstream
         self.windows = windows
 
-    async def windows_tools(self) -> list[types.Tool]:
+    async def _windows_tools_from(self, windows: ClientSession) -> list[types.Tool]:
         tools = []
         cursor = None
         while True:
-            page = await self.windows.list_tools(cursor=cursor)
+            page = await windows.list_tools(cursor=cursor)
             tools.extend(page.tools)
             cursor = page.nextCursor
             if not cursor:
                 return tools
+
+    async def windows_tools(self) -> list[types.Tool]:
+        for attempt in range(2):
+            try:
+                return await self.windows.run(self._windows_tools_from)
+            except Exception:
+                if attempt == 1:
+                    raise
+        raise RuntimeError("Windows-MCP tool discovery ended without a result")
 
     async def call(self, name: str, arguments: dict) -> types.CallToolResult:
         if name in {"alf_doctor", "agy_doctor"}:
@@ -237,10 +350,25 @@ class Bridge:
         return await self.upstream.call_tool(name, arguments)
 
     async def call_windows(self, name: str, arguments: dict) -> types.CallToolResult:
-        allowed = {t.name for t in await self.windows_tools()}
-        if name not in allowed or not isinstance(arguments, dict):
-            return json_result({"success": False, "error": "unknown Windows tool or invalid arguments"})
-        return await self.windows.call_tool(name, arguments)
+        for attempt in range(2):
+            stage = "discovery"
+
+            async def call_once(windows: ClientSession) -> types.CallToolResult:
+                nonlocal stage
+                allowed = {t.name for t in await self._windows_tools_from(windows)}
+                if name not in allowed or not isinstance(arguments, dict):
+                    return json_result({"success": False, "error": "unknown Windows tool or invalid arguments"})
+                stage = "call"
+                return await windows.call_tool(name, arguments)
+
+            try:
+                return await self.windows.run(call_once)
+            except Exception:
+                # Tool discovery is read-only. Reconnect once before dispatching
+                # the user's action; a failed action itself is never replayed.
+                if stage != "discovery" or attempt == 1:
+                    raise
+        raise RuntimeError("Windows-MCP call ended without a result")
 
 
 def make_server(config: dict) -> tuple[Server, InitializationOptions]:
@@ -248,20 +376,19 @@ def make_server(config: dict) -> tuple[Server, InitializationOptions]:
 
     @asynccontextmanager
     async def lifespan(server):
-        async with AsyncExitStack() as stack:
-            upstream = PerRequestUpstream(config["upstream"])
-            async with upstream.connect() as (_, initialized):
-                initialization_options.instructions = (initialized.instructions or "") + (
-                    "\n\nNative Windows: windows-main uses direct Windows-MCP tools, "
-                    "with windows_catalog and windows_call "
-                    "through alf_capabilities/alf_dispatch. Prefer PowerShell/FileSystem "
-                    "for background work. Desktop input respects user ownership."
-                )
-            params = StdioServerParameters(**config["windows"])
-            read, write = await stack.enter_async_context(stdio_client(params))
-            windows = await stack.enter_async_context(ClientSession(read, write))
-            await windows.initialize()
+        upstream = PerRequestUpstream(config["upstream"])
+        async with upstream.connect() as (_, initialized):
+            initialization_options.instructions = (initialized.instructions or "") + (
+                "\n\nNative Windows: windows-main uses direct Windows-MCP tools, "
+                "with windows_catalog and windows_call "
+                "through alf_capabilities/alf_dispatch. Prefer PowerShell/FileSystem "
+                "for background work. Desktop input respects user ownership."
+            )
+        windows = RecoveringWindows(config["windows"])
+        try:
             yield Bridge(upstream, windows)
+        finally:
+            await windows.close()
 
     server = Server("Alf Control", version="1.0.0", lifespan=lifespan)
 

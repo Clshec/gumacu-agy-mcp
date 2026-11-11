@@ -28,6 +28,13 @@ initialization, discovery, a read-only Windows command and a temporary file
 write/read/delete under the report's directory. It never overwrites the proof
 file if it already exists.
 
-The bridge initializes a fresh Linux transport for each operation and keeps its
-native Windows session. It does not retry failed commands. A resumed cached MCP
-session initializes the new frontend before forwarding its original request once.
+The bridge initializes a fresh Linux transport for each operation and reuses a
+healthy native Windows session. A worker owns the Windows stdio lifecycle and
+reconnects after transport errors. Read-only discovery can be retried before
+dispatch; a command already sent is never automatically replayed. A resumed
+cached MCP session initializes the new frontend before forwarding its original
+request once.
+
+Newer clients may probe `server/discover`. This MCP 1.x bridge returns `-32601`
+so compatible clients can fall back to legacy initialization. See the
+[known issue and recovery runbook](../../docs/connection-diagnostics.md#discovery-probe-timeouts-2026-11-11).

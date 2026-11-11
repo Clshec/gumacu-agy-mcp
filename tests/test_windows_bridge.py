@@ -1,9 +1,9 @@
 import asyncio
 import importlib.util
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from mcp import types
@@ -69,6 +69,61 @@ def test_resumed_session_bootstraps_without_replaying_or_leaking_internal_id():
     run(check())
 
 
+def test_server_discovery_falls_back_before_legacy_initialize():
+    async def check():
+        discovery = SessionMessage(types.JSONRPCMessage(types.JSONRPCRequest(
+            jsonrpc="2.0", id="modern-discovery", method="server/discover",
+            params={"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                              "io.modelcontextprotocol/clientCapabilities": {}}},
+        )))
+        initialize = SessionMessage(types.JSONRPCMessage(types.JSONRPCRequest(
+            jsonrpc="2.0", id="legacy-init", method="initialize", params={},
+        )))
+        source = SimpleNamespace(receive=AsyncMock(side_effect=[discovery, initialize]), aclose=AsyncMock())
+        sink = SimpleNamespace(send=AsyncMock(), aclose=AsyncMock())
+        reader = _bridge.ResumeSafeInput(source)
+        _bridge.ResumeSafeOutput(sink, reader)
+
+        assert await reader.receive() is initialize
+        sink.send.assert_awaited_once()
+        response = sink.send.await_args.args[0].message.root
+        assert isinstance(response, types.JSONRPCError)
+        assert response.id == "modern-discovery"
+        assert response.error.code == -32601
+        assert reader.state == "normal"
+
+    run(check())
+
+
+def test_server_discovery_after_initialize_does_not_reset_session():
+    async def check():
+        initialize = SessionMessage(types.JSONRPCMessage(types.JSONRPCRequest(
+            jsonrpc="2.0", id="legacy-init", method="initialize", params={},
+        )))
+        discovery = SessionMessage(types.JSONRPCMessage(types.JSONRPCRequest(
+            jsonrpc="2.0", id="modern-discovery", method="server/discover",
+            params={"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                              "io.modelcontextprotocol/clientCapabilities": {}}},
+        )))
+        listing = SessionMessage(types.JSONRPCMessage(types.JSONRPCRequest(
+            jsonrpc="2.0", id="legacy-list", method="tools/list", params={},
+        )))
+        source = SimpleNamespace(receive=AsyncMock(side_effect=[initialize, discovery, listing]), aclose=AsyncMock())
+        sink = SimpleNamespace(send=AsyncMock(), aclose=AsyncMock())
+        reader = _bridge.ResumeSafeInput(source)
+        _bridge.ResumeSafeOutput(sink, reader)
+
+        assert await reader.receive() is initialize
+        assert await reader.receive() is listing
+        response = sink.send.await_args.args[0].message.root
+        assert isinstance(response, types.JSONRPCError)
+        assert response.id == "modern-discovery"
+        assert response.error.code == -32601
+        assert reader.state == "normal"
+
+    run(check())
+
+
 def test_normal_client_initialization_passes_unchanged():
     async def check():
         original = SessionMessage(types.JSONRPCMessage(types.JSONRPCRequest(
@@ -97,7 +152,7 @@ def run(coroutine):
 def test_other_devices_forward_unchanged():
     upstream, windows = session(), session()
     args = {"device_id": "linux-netcup", "action": "ssh_call", "arguments": {"name": "ssh_exec"}}
-    run(Bridge(upstream, windows).call("agy_dispatch", args))
+    run(Bridge(upstream, backend(windows)).call("agy_dispatch", args))
     upstream.call_tool.assert_awaited_once_with("agy_dispatch", args)
     windows.call_tool.assert_not_awaited()
 
@@ -105,7 +160,7 @@ def test_other_devices_forward_unchanged():
 @pytest.mark.parametrize("facade", ["alf_dispatch", "agy_dispatch"])
 def test_windows_catalog_is_live_and_lists_schemas(facade):
     upstream, windows = session(), session()
-    result = run(Bridge(upstream, windows).call(facade, {"device_id": "windows-main", "action": "windows_catalog"}))
+    result = run(Bridge(upstream, backend(windows)).call(facade, {"device_id": "windows-main", "action": "windows_catalog"}))
     assert [t["name"] for t in result.structuredContent["tools"]] == ["PowerShell", "Screenshot"]
     upstream.call_tool.assert_not_awaited()
 
@@ -114,14 +169,14 @@ def test_windows_call_preserves_image_and_error_result():
     upstream, windows = session(), session()
     native = types.CallToolResult(content=[types.ImageContent(type="image", data="eA==", mimeType="image/png")], isError=False)
     windows.call_tool.return_value = native
-    result = run(Bridge(upstream, windows).call("agy_dispatch", {"device_id": "windows-main", "action": "windows_call", "arguments": {"name": "Screenshot"}}))
+    result = run(Bridge(upstream, backend(windows)).call("agy_dispatch", {"device_id": "windows-main", "action": "windows_call", "arguments": {"name": "Screenshot"}}))
     assert result is native
     windows.call_tool.assert_awaited_once_with("Screenshot", {})
 
 
 def test_unknown_tool_and_old_agent_action_do_not_execute():
     upstream, windows = session(), session()
-    bridge = Bridge(upstream, windows)
+    bridge = Bridge(upstream, backend(windows))
     for arguments in ({"device_id": "windows-main", "action": "start"},
                       {"device_id": "windows-main", "action": "windows_call", "arguments": {"name": "not_allowed"}}):
         assert run(bridge.call("agy_dispatch", arguments)).structuredContent["success"] is False
@@ -139,7 +194,7 @@ def test_capabilities_replace_stale_agent_without_mutating_upstream():
 
 def test_old_upstream_cannot_reintroduce_removed_execution():
     upstream, windows = session(), session()
-    bridge = Bridge(upstream, windows)
+    bridge = Bridge(upstream, backend(windows))
     for name, args in [("agy_start", {"PROMPT": "work"}),
                        ("agy_dispatch", {"device_id": "linux-netcup", "action": "start"})]:
         result = run(bridge.call(name, args))
@@ -152,7 +207,7 @@ def test_old_upstream_cannot_reintroduce_removed_execution():
 
 def test_direct_tool_and_argument_limit():
     upstream, windows = session(), session()
-    bridge = Bridge(upstream, windows)
+    bridge = Bridge(upstream, backend(windows))
     run(bridge.call("windows_PowerShell", {"command": "Get-Date"}))
     windows.call_tool.assert_awaited_once_with("PowerShell", {"command": "Get-Date"})
     result = run(bridge.call("agy_dispatch", {"device_id": "windows-main", "action": "windows_call", "arguments": {"name": "PowerShell", "arguments": {"command": "x" * 256_001}}}))
@@ -163,5 +218,109 @@ def test_direct_tool_and_argument_limit():
 def test_windows_tool_pagination():
     upstream, windows = session(), session()
     windows.list_tools.side_effect = [types.ListToolsResult(tools=[types.Tool(name="A", inputSchema={})], nextCursor="next"), types.ListToolsResult(tools=[types.Tool(name="B", inputSchema={})])]
-    assert [t.name for t in run(Bridge(upstream, windows).windows_tools())] == ["A", "B"]
+    assert [t.name for t in run(Bridge(upstream, backend(windows)).windows_tools())] == ["A", "B"]
     assert windows.list_tools.call_args_list[1].kwargs == {"cursor": "next"}
+
+def backend(client):
+    async def run(operation):
+        return await operation(client)
+
+    return SimpleNamespace(run=run)
+
+
+def recovering_windows(sessions):
+    transport_type = getattr(_bridge, "RecoveringWindows", None)
+    assert transport_type is not None, "Windows bridge needs a recoverable persistent transport"
+    windows = transport_type({"command": "unused-test-command"})
+    opened = []
+    closed = []
+
+    async def open_session():
+        current = sessions.pop(0)
+        stack = AsyncExitStack()
+        stack.callback(closed.append, current)
+        opened.append(current)
+        return current, stack
+
+    windows._open_session = open_session
+    return windows, opened, closed
+
+
+def test_windows_session_is_reused_and_safely_reconnected_before_dispatch():
+    async def check():
+        first = session()
+        fresh = session()
+        windows, opened, closed = recovering_windows([first, fresh])
+        bridge = _bridge.Bridge(session(), windows)
+
+        await bridge.call("windows_PowerShell", {"command": "Get-Date"})
+        await bridge.call("windows_PowerShell", {"command": "Get-Date"})
+        assert opened == [first]
+        assert closed == []
+        first.call_tool.assert_has_awaits([
+            call("PowerShell", {"command": "Get-Date"}),
+            call("PowerShell", {"command": "Get-Date"}),
+        ])
+
+        first.list_tools.side_effect = ConnectionError("Windows-MCP child exited")
+        result = await bridge.call("windows_PowerShell", {"command": "Get-Date"})
+        assert result.structuredContent["ok"] is True
+        assert opened == [first, fresh]
+        assert closed == [first]
+        assert first.call_tool.await_count == 2
+        fresh.list_tools.assert_awaited_once_with(cursor=None)
+        fresh.call_tool.assert_awaited_once_with("PowerShell", {"command": "Get-Date"})
+
+        await windows.close()
+        assert closed == [first, fresh]
+
+    run(check())
+
+
+def test_windows_action_failure_is_not_replayed_and_next_call_reconnects():
+    async def check():
+        broken = session()
+        broken.call_tool.side_effect = ConnectionError("Windows-MCP child exited")
+        fresh = session()
+        windows, opened, closed = recovering_windows([broken, fresh])
+        bridge = _bridge.Bridge(session(), windows)
+
+        with pytest.raises(ConnectionError, match="Windows-MCP child exited"):
+            await bridge.call("windows_PowerShell", {"command": "Get-Date"})
+
+        broken.call_tool.assert_awaited_once_with("PowerShell", {"command": "Get-Date"})
+        assert closed == [broken]
+        assert opened == [broken]
+
+        result = await bridge.call("windows_PowerShell", {"command": "Get-Date"})
+        assert result.structuredContent["ok"] is True
+        fresh.call_tool.assert_awaited_once_with("PowerShell", {"command": "Get-Date"})
+        assert opened == [broken, fresh]
+        await windows.close()
+        assert closed == [broken, fresh]
+
+    run(check())
+
+
+def test_windows_stdio_lifecycle_is_owned_and_closed_by_one_worker_task():
+    async def check():
+        windows = _bridge.RecoveringWindows({"command": "unused-test-command"})
+        opened_tasks = []
+        closed_tasks = []
+
+        async def open_session():
+            stack = AsyncExitStack()
+            opened_tasks.append(asyncio.current_task())
+
+            async def record_close():
+                closed_tasks.append(asyncio.current_task())
+
+            stack.push_async_callback(record_close)
+            return session(), stack
+
+        windows._open_session = open_session
+        await windows.run(lambda current: current.list_tools(cursor=None))
+        await windows.close()
+        assert opened_tasks == closed_tasks
+
+    run(check())

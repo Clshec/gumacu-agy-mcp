@@ -58,7 +58,26 @@ The [example registry](deploy/devices.example.json) includes two providers; repl
 the example sockets with real configured services. New devices do not change MCP
 schemas. The existing `linux-netcup` and `windows-main` identities are preserved.
 
-## Development
+## Known connection issue: discovery probe times out
+
+A running tunnel and Windows-MCP process can still fail to serve ChatGPT calls.
+The incident verified on 2026-11-11 involved a newer client sending
+`server/discover` to the Windows bridge's MCP 1.x server. The old parser rejected
+the method, preventing usable protocol negotiation and causing connection timeouts.
+`MCP server is not initialized` alone is a symptom, not proof of this cause.
+
+The bridge now answers this unsupported probe with JSON-RPC `-32601`, preserving
+the request ID and allowing compatible clients to fall back to the legacy
+`initialize` handshake. It also recovers a failed Windows transport before
+dispatch; an action that was already sent is never automatically replayed.
+
+Deploy the updated bridge to the active tunnel command and restart that managed
+runtime to load it. Verify `alf_capabilities`, the Windows catalog, a harmless
+Windows command, and `alf_doctor` from the actual ChatGPT connection. Process
+readiness alone is insufficient. See the [diagnosis and recovery runbook](docs/connection-diagnostics.md#discovery-probe-timeouts-2026-11-11)
+for log signatures, safe recovery steps, regression checks and limitations.
+
+## Development checks
 
 ```sh
 uv sync --locked
