@@ -1,0 +1,9 @@
+# Configure an enrolled SSH alias locally, with host keys already verified.
+[mcp_servers.alf_control]
+command = "ssh"
+args = ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "alf-control-host", "/opt/gumacu-agy-mcp/run-mcp.sh"]
+startup_timeout_sec = 30
+tool_timeout_sec = 180
+
+[mcp_servers.alf_control.env]
+PROGRAMDATA = 'C:\ProgramData'

@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
 
-from agy_mcp.interactive_operations import InteractiveOperations
+from alf_control.interactive_operations import InteractiveOperations
 
 
 def _reply(**kwargs):
@@ -160,29 +160,3 @@ def test_failed_spawn_is_recorded_without_holding_a_slot(tmp_path):
         op, "step_new_try", "Inspect", "Check details",
         lambda: _reply(success=True, job_id="job_success", error=None),
     )["success"]
-
-
-def test_all_step_operations_use_existing_supervisor_contract(tmp_path, monkeypatch):
-    from agy_mcp import server
-    from agy_mcp.models import BridgeResponse
-    from agy_mcp.session_store import SessionStore
-
-    store = SessionStore(tmp_path)
-    monkeypatch.setattr(
-        server, "_ensure_state", lambda: (None, None, store, None),
-    )
-    seen = []
-    monkeypatch.setattr(
-        server, "agy_start_tool", lambda **kwargs: (
-            seen.append(kwargs) or BridgeResponse(success=True, status="running", job_id="job_new")
-        ),
-    )
-    operation_id = server.operation_create("Guide operations")["operation_id"]
-    started = server.operation_step(
-        operation_id, "test_run_once", "Observe", "Inspect Odoo",
-        mode="ask", allow_write=False,
-    )
-    assert started["success"]
-    assert seen[0]["timeout"] == 0
-    assert seen[0]["backend"] == "agy"
-    assert seen[0]["allow_write"] is False
